@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi, Map as MapIcon, Settings, UserCircle } from 'lucide-react';
+import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi, Map as MapIcon, Settings, UserCircle, KeyRound, ArrowRight } from 'lucide-react';
 import { ITAJAI_UBS_LIST } from './constants';
 import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem, ActiveDriver } from './types';
 import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
-// Firebase Imports - Modular Syntax (Correct for v10+ via esm.sh)
+// Firebase Imports - Modular Syntax
 // @ts-ignore
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, set, onValue, push, onDisconnect, remove } from "firebase/database";
+import { getDatabase, ref, set, onValue, push, onDisconnect, remove, update, get } from "firebase/database";
 
 // --- CONFIGURAÇÃO DO FIREBASE (H2 BRASIL LOGÍSTICA) ---
 const firebaseConfig = {
@@ -22,7 +22,7 @@ const firebaseConfig = {
   measurementId: "G-6M2EGP7TDD"
 };
 
-// Inicializa o Firebase com tratamento de erro robusto
+// Inicializa o Firebase
 let app;
 let db: any = null;
 let firebaseErrorMsg = "";
@@ -36,32 +36,12 @@ try {
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
-  if (error.code === 'app/no-app') {
-      firebaseErrorMsg = "Erro de Inicialização do App.";
-  } else {
-      firebaseErrorMsg = "Conexão com Banco de Dados falhou: " + (error.message || "Erro desconhecido");
-  }
-}
-
-// Helper para ID persistente do motorista
-const getDriverId = () => {
-    let id = localStorage.getItem('h2_driver_id');
-    if (!id) {
-        // Gera um ID curto aleatório
-        id = 'driver_' + Math.random().toString(36).substr(2, 6).toUpperCase();
-        localStorage.setItem('h2_driver_id', id);
-    }
-    return id;
-};
-
-// Helper para Nome persistente
-const getStoredDriverName = () => {
-    return localStorage.getItem('h2_driver_name') || '';
+  firebaseErrorMsg = "Erro de conexão com o Banco de Dados. Verifique sua internet.";
 }
 
 // Logo Component
 const H2Logo = () => (
-  <svg viewBox="0 0 100 100" className="h-12 w-12 mr-3 drop-shadow-sm" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <svg viewBox="0 0 100 100" className="h-10 w-10 md:h-12 md:w-12 mr-3 drop-shadow-sm" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path d="M50 5 C50 5 10 45 10 65 C10 87 28 100 50 100 C72 100 90 87 90 65 C90 45 50 5 50 5Z" fill="white"/>
     <path d="M50 5 C50 5 15 42 12 60 C12 60 20 80 50 80 C40 60 50 5 50 5Z" fill="#166534" /> 
     <path d="M50 100 C72 100 90 87 90 65 C90 50 70 25 50 5 C55 30 60 60 30 85 C35 95 42 100 50 100Z" fill="#EAB308" />
@@ -73,37 +53,65 @@ const H2Logo = () => (
 );
 
 export default function App() {
-  const [selectedUBS, setSelectedUBS] = useState<string[]>([]);
-  const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
-  const [locationStatus, setLocationStatus] = useState<'locating' | 'found' | 'error'>('locating');
-  const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
-  const [viewState, setViewState] = useState<ViewState>('selection');
+  // App State
+  const [viewState, setViewState] = useState<ViewState>('login');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(firebaseErrorMsg || null);
-  
-  // Driver Identity State
-  const [driverId] = useState(getDriverId());
-  const [driverName, setDriverName] = useState(getStoredDriverName());
-  const [isDriverNameEditing, setIsDriverNameEditing] = useState(false);
+
+  // Driver / User State
+  const [driverName, setDriverName] = useState('');
+  const [driverId, setDriverId] = useState<string | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<Coordinates | null>(null);
+  const [locationStatus, setLocationStatus] = useState<'locating' | 'found' | 'error'>('locating');
+
+  // Route State
+  const [selectedUBS, setSelectedUBS] = useState<string[]>([]);
+  const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
 
   // Admin State
-  const [showLoginModal, setShowLoginModal] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  // Lista de motoristas ativos
+  const [adminPassword, setAdminPassword] = useState('');
   const [activeDrivers, setActiveDrivers] = useState<ActiveDriver[]>([]);
-
-  // History State
+  
+  // History
   const [history, setHistory] = useState<DeliveryHistoryItem[]>([]);
   const [historyDateFilter, setHistoryDateFilter] = useState<string>(new Date().toISOString().split('T')[0]);
 
-  // Confirmation Modal State
+  // UI State
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; stopId: string | null }>({ isOpen: false, stopId: null });
   const [noteText, setNoteText] = useState('');
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
 
-  // --- LÓGICA DE HISTÓRICO NO BANCO DE DADOS ---
+  // --- EFEITOS DE INICIALIZAÇÃO ---
+
+  // 1. Recuperar Sessão do Motorista (Persistência)
+  useEffect(() => {
+    const storedDriverId = localStorage.getItem('h2_driver_id');
+    const storedDriverName = localStorage.getItem('h2_driver_name');
+
+    if (storedDriverId && !isAdmin) {
+        setDriverId(storedDriverId);
+        if (storedDriverName) setDriverName(storedDriverName);
+        
+        // Pula tela de login se já tem ID
+        setViewState('selection');
+
+        // Sincroniza nome atualizado do banco se disponível
+        if (db) {
+            get(ref(db, `drivers/${storedDriverId}/name`)).then((snapshot) => {
+                if (snapshot.exists()) {
+                    setDriverName(snapshot.val());
+                    localStorage.setItem('h2_driver_name', snapshot.val());
+                }
+            }).catch(console.error);
+        }
+        
+        // Inicia GPS imediatamente
+        getLocation();
+    }
+  }, [isAdmin]);
+
+  // 2. Carregar Histórico Global (Firebase)
   useEffect(() => {
     if (!db) return;
     const historyRef = ref(db, 'history');
@@ -111,10 +119,7 @@ export default function App() {
       const data = snapshot.val();
       if (data) {
         const historyArray = Object.values(data) as DeliveryHistoryItem[];
-        const sortedHistory = historyArray.sort((a, b) => {
-           return (b.date + b.completedAt).localeCompare(a.date + a.completedAt);
-        });
-        setHistory(sortedHistory);
+        setHistory(historyArray.sort((a, b) => (b.date + b.completedAt).localeCompare(a.date + a.completedAt)));
       } else {
         setHistory([]);
       }
@@ -122,172 +127,168 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Inicializa GPS
+  // 3. Monitoramento de Motoristas (Apenas para Admin)
   useEffect(() => {
-      getLocation();
-  }, []);
-
-  // --- LOGICA DE RASTREAMENTO MULTI-MOTORISTA (LADO DO ENTREGADOR) ---
-  useEffect(() => {
-      let watchId: number;
-
-      if (!isAdmin && navigator.geolocation) {
-          watchId = navigator.geolocation.watchPosition(
-              (position) => {
-                  const { latitude, longitude } = position.coords;
-                  const newLocation = { lat: latitude, lng: longitude };
-                  
-                  setCurrentLocation(newLocation);
-                  setLocationStatus('found');
-
-                  // *** ENVIA PARA FIREBASE USANDO ID ÚNICO ***
-                  if (db) {
-                    const driverRef = ref(db, `drivers/${driverId}`);
-                    
-                    // Configura para apagar se perder conexão
-                    onDisconnect(driverRef).remove();
-
-                    // Atualiza dados
-                    set(driverRef, { 
-                      id: driverId,
-                      name: driverName || `Motorista ${driverId.slice(-4)}`,
-                      lat: latitude, 
-                      lng: longitude,
-                      updatedAt: Date.now()
-                    }).catch((err: any) => {
-                        console.error("Erro ao enviar localização:", err);
-                    });
-                  }
-              },
-              (err) => {
-                  console.error("Erro no rastreamento:", err);
-                  setLocationStatus('error');
-              },
-              { enableHighAccuracy: true }
-          );
-      } else if (isAdmin && db) {
-          // Se virar admin, remove registro de motorista deste dispositivo
-          remove(ref(db, `drivers/${driverId}`));
-      }
-
-      return () => {
-          if (watchId) navigator.geolocation.clearWatch(watchId);
-      };
-  }, [isAdmin, driverName, driverId]); // Re-run se mudar nome ou status
-
-  // --- LOGICA DE MONITORAMENTO MULTIPLO (LADO DO ADMIN) ---
-  useEffect(() => {
-      if (isAdmin && viewState === 'admin-monitor' && db) {
-          const driversListRef = ref(db, 'drivers');
-          
-          const unsubscribe = onValue(driversListRef, (snapshot) => {
-              const data = snapshot.val();
-              if (data) {
-                  // Converte objeto { id1: {...}, id2: {...} } em array
-                  const driversArray = Object.values(data) as ActiveDriver[];
-                  // Filtra motoristas muito antigos (ex: > 1 hora sem update) para evitar fantasmas se o onDisconnect falhar
-                  const now = Date.now();
-                  const freshDrivers = driversArray.filter(d => (now - d.updatedAt) < 3600000); 
-                  setActiveDrivers(freshDrivers);
-              } else {
-                  setActiveDrivers([]);
-              }
-          });
-
-          return () => unsubscribe();
-      }
+    if (isAdmin && viewState === 'admin-monitor' && db) {
+      const driversRef = ref(db, 'drivers');
+      const unsubscribe = onValue(driversRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          const driversList = Object.values(data) as ActiveDriver[];
+          // Filtra quem não atualiza há mais de 24h para limpar o mapa visualmente
+          const oneDayAgo = Date.now() - 86400000;
+          setActiveDrivers(driversList.filter(d => d.updatedAt > oneDayAgo));
+        } else {
+          setActiveDrivers([]);
+        }
+      });
+      return () => unsubscribe();
+    }
   }, [isAdmin, viewState]);
 
-  // Salvar nome do motorista
-  const saveDriverName = () => {
-      localStorage.setItem('h2_driver_name', driverName);
-      setIsDriverNameEditing(false);
+  // 4. Rastreamento GPS e Sync (Apenas Motorista Logado)
+  useEffect(() => {
+    let watchId: number;
+
+    if (!isAdmin && driverId && navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          setCurrentLocation({ lat: latitude, lng: longitude });
+          setLocationStatus('found');
+
+          // Atualiza Firebase
+          if (db) {
+            const myDriverRef = ref(db, `drivers/${driverId}`);
+            
+            // Configura desconexão automática (fica 'offline' se fechar o app)
+            onDisconnect(myDriverRef).update({ 
+              status: 'offline',
+              updatedAt: Date.now() 
+            });
+
+            update(myDriverRef, {
+              id: driverId,
+              name: driverName,
+              lat: latitude,
+              lng: longitude,
+              updatedAt: Date.now(),
+              status: 'online'
+            });
+          }
+        },
+        (err) => {
+          console.error("Erro GPS:", err);
+          setLocationStatus('error');
+        },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 }
+      );
+    }
+
+    return () => {
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+    };
+  }, [isAdmin, driverId, driverName]);
+
+
+  // --- FUNÇÕES DE AÇÃO ---
+
+  const handleDriverLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!driverName.trim()) return;
+
+    // Sanitiza o nome para usar como ID único
+    const id = driverName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // Salva sessão localmente para persistência
+    localStorage.setItem('h2_driver_id', id);
+    localStorage.setItem('h2_driver_name', driverName);
+
+    setDriverId(id);
+    setViewState('selection');
+    getLocation();
+  };
+
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminPassword === 'lulaladrao') {
+        setIsAdmin(true);
+        setViewState('admin-monitor');
+        setShowAdminLogin(false);
+        setAdminPassword('');
+    } else {
+        setError('Senha administrativa incorreta.');
+        setTimeout(() => setError(null), 3000);
+    }
+  };
+
+  const logout = () => {
+    if (isAdmin) {
+        setIsAdmin(false);
+        setViewState('login');
+    } else {
+        // Se for motorista, muda status para offline antes de sair
+        if (db && driverId) {
+            update(ref(db, `drivers/${driverId}`), { status: 'offline' });
+        }
+        // Limpa sessão persistente
+        localStorage.removeItem('h2_driver_id');
+        localStorage.removeItem('h2_driver_name');
+
+        setDriverId(null);
+        setDriverName('');
+        setViewState('login');
+        setSelectedUBS([]);
+        setOptimizationResult(null);
+    }
   };
 
   const getLocation = () => {
     setLocationStatus('locating');
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
-          setCurrentLocation({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-          });
+        (pos) => {
+          setCurrentLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
           setLocationStatus('found');
         },
-        (err) => {
-          console.error(err);
-          setCurrentLocation({ lat: -26.9046, lng: -48.6612 });
-          setLocationStatus('error');
-        },
-        { enableHighAccuracy: true }
+        () => {
+           setCurrentLocation({ lat: -26.9046, lng: -48.6612 }); // Fallback
+           setLocationStatus('error');
+        }
       );
-    } else {
-      setLocationStatus('error');
-      setCurrentLocation({ lat: -26.9046, lng: -48.6612 });
     }
-  };
-
-  const handleLogin = () => {
-      if (username === 'admin' && password === 'lulaladrao') {
-          setIsAdmin(true);
-          setShowLoginModal(false);
-          setViewState('admin-monitor');
-          setLoginError('');
-      } else {
-          setLoginError('Credenciais inválidas.');
-      }
-  };
-
-  const logout = () => {
-      setIsAdmin(false);
-      setUsername('');
-      setPassword('');
-      setViewState('selection');
-      setActiveDrivers([]);
   };
 
   const toggleUBS = (id: string) => {
-    setSelectedUBS((prev) =>
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
-    );
+    setSelectedUBS(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
   };
 
   const selectAll = () => {
-      if (selectedUBS.length === ITAJAI_UBS_LIST.length) {
-          setSelectedUBS([]);
-      } else {
-          setSelectedUBS(ITAJAI_UBS_LIST.map(u => u.id));
-      }
+      setSelectedUBS(selectedUBS.length === ITAJAI_UBS_LIST.length ? [] : ITAJAI_UBS_LIST.map(u => u.id));
   };
 
   const handleOptimization = async () => {
-    if (selectedUBS.length === 0) {
-      setError("Selecione pelo menos um ponto de entrega.");
-      return;
-    }
+    if (selectedUBS.length === 0) return setError("Selecione entregas.");
     if (!currentLocation) {
-        setError("Aguardando sinal de GPS...");
         getLocation();
-        return;
+        return setError("Aguardando GPS...");
     }
 
     setLoading(true);
     setViewState('optimizing');
-    setError(null);
-
+    
     try {
       const selectedData = ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id));
       const result = await optimizeRoute(currentLocation, selectedData);
       setOptimizationResult(result);
       setViewState('result');
-    } catch (e: any) {
-      console.error("Erro na Otimização:", e);
-      let msg = e.message || "Falha ao calcular logística.";
-      if (JSON.stringify(e).includes("API key not valid") || msg.includes("API key not valid")) {
-          msg = "ERRO NA IA: A chave de API do Gemini (IA) é inválida.";
+      
+      if (db && driverId) {
+          update(ref(db, `drivers/${driverId}`), { currentDestination: 'Em rota de entrega' });
       }
-      setError(msg);
+
+    } catch (e: any) {
+      setError(e.message || "Erro ao calcular rota.");
       setViewState('selection');
     } finally {
       setLoading(false);
@@ -296,29 +297,15 @@ export default function App() {
 
   const handleNavigateAll = () => {
     if (!currentLocation || !optimizationResult) return;
-    const pendingStops = optimizationResult.route.filter(s => s.status !== 'completed');
-    if (pendingStops.length === 0) {
-        alert("Todas as entregas foram concluídas!");
-        return;
-    }
+    const pending = optimizationResult.route.filter(s => s.status !== 'completed');
+    if (pending.length === 0) return alert("Rota finalizada!");
+
     const origin = `${currentLocation.lat},${currentLocation.lng}`;
-    const lastStop = pendingStops[pendingStops.length - 1];
-    const destination = `${lastStop.coords.lat},${lastStop.coords.lng}`;
-    const waypoints = pendingStops.slice(0, pendingStops.length - 1)
-        .map(s => `${s.coords.lat},${s.coords.lng}`)
-        .join('|');
-
-    let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
-    if (waypoints) {
-        url += `&waypoints=${waypoints}`;
-    }
-    window.open(url, '_blank');
+    const dest = pending[pending.length - 1];
+    const waypoints = pending.slice(0, pending.length - 1).map(s => `${s.coords.lat},${s.coords.lng}`).join('|');
+    
+    window.open(`https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${dest.coords.lat},${dest.coords.lng}&waypoints=${waypoints}`, '_blank');
   };
-
-  const openConfirmModal = (stopId: string) => {
-    setNoteText('');
-    setConfirmModal({ isOpen: true, stopId });
-  }
 
   const handleConfirmDelivery = () => {
     if (!optimizationResult || !confirmModal.stopId) return;
@@ -327,618 +314,398 @@ export default function App() {
     const now = new Date();
     const timestamp = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const dateKey = now.toISOString().split('T')[0];
+    const stopDetails = optimizationResult.route.find(s => s.id === stopId);
 
-    const updatedRoute = optimizationResult.route.map(stop => {
-        if (stop.id === stopId) {
-            return { 
-                ...stop, 
-                status: 'completed' as const, 
-                completedAt: timestamp,
-                notes: noteText
-            };
-        }
-        return stop;
-    });
-
+    // Update Local State
+    const updatedRoute = optimizationResult.route.map(stop => 
+        stop.id === stopId ? { ...stop, status: 'completed' as const, completedAt: timestamp, notes: noteText } : stop
+    );
     setOptimizationResult({ ...optimizationResult, route: updatedRoute });
 
-    const stopDetails = optimizationResult.route.find(s => s.id === stopId);
+    // Update Firebase
     if (stopDetails && db) {
-        const newHistoryItem: DeliveryHistoryItem = {
-            id: stopId + '-' + now.getTime(), 
+        const item: DeliveryHistoryItem = {
+            id: `${stopId}-${now.getTime()}`,
             stopName: stopDetails.name,
             address: stopDetails.address,
             completedAt: timestamp,
             date: dateKey,
             notes: noteText
         };
-        const newListRef = push(ref(db, 'history'));
-        set(newListRef, newHistoryItem).catch((err) => console.error(err));
+        push(ref(db, 'history'), item);
     }
     setConfirmModal({ isOpen: false, stopId: null });
   };
 
-  const reset = () => {
-    setViewState('selection');
-    setSelectedUBS([]);
-  };
+  // --- RENDERIZADORES ---
 
-  const toggleHistory = () => {
-    if (isAdmin) return; 
-    if (viewState === 'history') {
-        setViewState(optimizationResult ? 'result' : 'selection');
-    } else {
-        setViewState('history');
-    }
-  };
-
-  const selectedUBSObjects = ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id));
-  const filteredHistory = history.filter(item => item.date === historyDateFilter);
-
-  // Formata o tempo desde a última atualização
-  const getTimeSinceUpdate = (timestamp: number) => {
-      const seconds = Math.floor((Date.now() - timestamp) / 1000);
-      if (seconds < 60) return 'Agora';
-      if (seconds < 3600) return `${Math.floor(seconds/60)} min atrás`;
-      return '> 1h';
-  };
-
-  if (error && error.includes("Erro crítico")) {
+  if (error && error.includes("Banco de Dados")) {
       return (
-          <div className="h-screen w-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
+          <div className="h-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
               <AlertTriangle className="h-12 w-12 text-red-600 mb-4" />
-              <h1 className="text-xl font-bold text-red-800">Erro de Inicialização</h1>
-              <p className="text-red-600 mt-2">{error}</p>
-              <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-red-600 text-white rounded shadow">
-                  Recarregar Aplicação
+              <h1 className="text-xl font-bold text-red-900">Serviço Indisponível</h1>
+              <p className="text-red-700 mt-2">{error}</p>
+              <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-red-600 text-white rounded">
+                  Tentar Novamente
               </button>
           </div>
-      )
+      );
   }
 
+  // TELA DE LOGIN (INICIAL)
+  if (viewState === 'login') {
+      return (
+        <div className="h-screen bg-[#002855] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
+                <div className="absolute top-10 left-10 w-64 h-64 bg-[#FBBF24] rounded-full blur-3xl"></div>
+                <div className="absolute bottom-10 right-10 w-96 h-96 bg-blue-400 rounded-full blur-3xl"></div>
+            </div>
+
+            <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-8 rounded-2xl w-full max-w-md shadow-2xl z-10">
+                <div className="flex flex-col items-center mb-8">
+                    <H2Logo />
+                    <h1 className="text-2xl font-bold text-white mt-4 tracking-tight">H2 BRASIL <span className="text-[#FBBF24]">LOGÍSTICA</span></h1>
+                    <p className="text-blue-200 text-sm mt-1">Sistema de Roteirização Inteligente</p>
+                </div>
+
+                {!showAdminLogin ? (
+                    <form onSubmit={handleDriverLogin} className="space-y-4">
+                        <div>
+                            <label className="text-xs font-bold text-blue-200 uppercase tracking-wider mb-2 block">Identificação do Motorista</label>
+                            <div className="relative group">
+                                <UserCircle className="absolute left-3 top-3.5 h-5 w-5 text-slate-400 group-focus-within:text-[#FBBF24] transition-colors" />
+                                <input 
+                                    type="text" 
+                                    value={driverName}
+                                    onChange={(e) => setDriverName(e.target.value)}
+                                    className="w-full bg-white/10 border border-white/20 text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FBBF24] placeholder-blue-300/50"
+                                    placeholder="Digite seu Nome ou Placa"
+                                    required
+                                />
+                            </div>
+                        </div>
+                        <button type="submit" className="w-full bg-[#FBBF24] hover:bg-[#d9a51f] text-[#002855] font-bold py-3.5 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 group">
+                            INICIAR TURNO <ArrowRight className="h-5 w-5 group-hover:translate-x-1 transition-transform" />
+                        </button>
+                        <div className="pt-4 text-center">
+                            <button type="button" onClick={() => setShowAdminLogin(true)} className="text-xs text-blue-300 hover:text-white underline decoration-dashed underline-offset-4">
+                                Acesso Administrativo
+                            </button>
+                        </div>
+                    </form>
+                ) : (
+                    <form onSubmit={handleAdminLogin} className="space-y-4 animate-in fade-in slide-in-from-right-10 duration-300">
+                         <div>
+                            <label className="text-xs font-bold text-blue-200 uppercase tracking-wider mb-2 block">Senha Master</label>
+                            <div className="relative group">
+                                <KeyRound className="absolute left-3 top-3.5 h-5 w-5 text-slate-400 group-focus-within:text-[#FBBF24] transition-colors" />
+                                <input 
+                                    type="password" 
+                                    value={adminPassword}
+                                    onChange={(e) => setAdminPassword(e.target.value)}
+                                    className="w-full bg-white/10 border border-white/20 text-white pl-10 pr-4 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FBBF24] placeholder-blue-300/50"
+                                    placeholder="Senha de Gestor"
+                                    autoFocus
+                                />
+                            </div>
+                        </div>
+                        {error && <p className="text-red-400 text-xs text-center">{error}</p>}
+                        <div className="flex gap-3">
+                            <button type="button" onClick={() => setShowAdminLogin(false)} className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-3 rounded-xl transition-colors">
+                                Voltar
+                            </button>
+                            <button type="submit" className="flex-1 bg-[#FBBF24] hover:bg-[#d9a51f] text-[#002855] font-bold py-3 rounded-xl transition-colors shadow-lg">
+                                Entrar
+                            </button>
+                        </div>
+                    </form>
+                )}
+            </div>
+            <p className="absolute bottom-4 text-[10px] text-white/30">v2.1 • Powered by Gemini AI & Firebase</p>
+        </div>
+      );
+  }
+
+  // APP PRINCIPAL
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
-      {/* Header */}
-      <header className="bg-[#002855] text-white p-3 shadow-lg flex items-center justify-between z-20 border-b border-[#001f40]">
-        <div className="flex items-center">
-          <H2Logo />
-          <div>
-            <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-white leading-tight">
-              H2 BRASIL <span className="text-[#FBBF24] font-light">DISTRIBUIDORA</span>
-            </h1>
-            <p className="text-[10px] md:text-xs text-blue-200 uppercase tracking-widest font-semibold mt-0.5">
-              {isAdmin ? 'MÓDULO ADMINISTRATIVO' : 'Sistema de Logística Inteligente'}
-            </p>
-          </div>
+      
+      {/* Header Profissional */}
+      <header className="bg-[#002855] text-white px-4 py-3 shadow-lg flex items-center justify-between z-30 shrink-0">
+        <div className="flex items-center gap-3">
+           <H2Logo />
+           <div className="flex flex-col">
+              <span className="font-bold text-lg leading-tight tracking-tight">H2 BRASIL</span>
+              <span className="text-[10px] text-blue-200 font-medium uppercase tracking-widest">
+                  {isAdmin ? 'Painel de Gestão' : 'Logística Mobile'}
+              </span>
+           </div>
         </div>
-        
-        <div className="flex items-center gap-2 md:gap-3">
-            {isAdmin ? (
-                <div className="flex items-center gap-2">
-                    <span className="text-xs bg-yellow-500 text-[#002855] font-bold px-2 py-1 rounded hidden md:inline">
-                        Admin
-                    </span>
-                    <button onClick={logout} className="bg-red-600 hover:bg-red-700 p-2 rounded-lg text-white transition shadow-sm">
-                        <LogOut className="h-5 w-5" />
-                    </button>
-                </div>
-            ) : (
-                <>
-                    <div className={`hidden md:flex px-3 py-1 rounded-full text-xs font-medium border items-center gap-2 ${locationStatus === 'found' ? 'bg-green-900/30 border-green-500 text-green-400' : 'bg-red-900/30 border-red-500 text-red-400'}`}>
-                        <div className={`w-2 h-2 rounded-full ${locationStatus === 'found' ? 'bg-green-400' : 'bg-red-400 animate-pulse'}`}></div>
-                        {locationStatus === 'found' ? 'GPS ON' : 'GPS OFF'}
-                    </div>
 
-                    <button onClick={toggleHistory} className={`p-2 rounded-lg text-white transition border border-[#004080] shadow-sm flex items-center gap-2 ${viewState === 'history' ? 'bg-[#FBBF24] text-[#002855] font-bold' : 'bg-[#003366] hover:bg-[#004080]'}`}>
-                        <History className="h-5 w-5" />
-                        <span className="hidden md:inline text-sm">Histórico</span>
-                    </button>
-
-                    <button onClick={getLocation} className="bg-[#003366] hover:bg-[#004080] p-2 rounded-lg text-white transition border border-[#004080] shadow-sm">
-                        <Crosshair className={`h-5 w-5 ${locationStatus === 'locating' ? 'animate-spin' : ''}`} />
-                    </button>
-                    
-                    <button onClick={() => setShowLoginModal(true)} className="bg-[#001f33] hover:bg-[#001522] p-2 rounded-lg text-slate-400 hover:text-white transition border border-[#004080] shadow-sm">
-                        <Lock className="h-5 w-5" />
-                    </button>
-
-                    <button onClick={reset} className={`text-sm bg-[#FBBF24] hover:bg-[#f59e0b] text-[#002855] font-bold px-4 py-2 rounded-lg flex items-center gap-1 transition-all duration-300 shadow-md ${viewState === 'result' ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10 pointer-events-none hidden'}`}>
-                        <RotateCcw className="h-4 w-4" /> <span className="hidden md:inline">Nova Rota</span>
-                    </button>
-                </>
-            )}
+        <div className="flex items-center gap-3">
+             {isAdmin ? (
+                 <div className="flex items-center bg-blue-900/50 px-3 py-1.5 rounded-lg border border-blue-800">
+                     <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse mr-2"></span>
+                     <span className="text-xs font-bold text-blue-100 hidden md:inline">MONITORAMENTO ATIVO</span>
+                     <span className="text-xs font-bold text-blue-100 md:hidden">ADMIN</span>
+                 </div>
+             ) : (
+                 <div className="flex items-center gap-2 text-right">
+                     <div className="flex flex-col items-end">
+                         <span className="text-xs font-bold text-white">{driverName}</span>
+                         <span className="text-[9px] text-green-400 font-bold flex items-center gap-1">
+                             <div className="w-1.5 h-1.5 rounded-full bg-green-400"></div> ONLINE
+                         </span>
+                     </div>
+                 </div>
+             )}
+             
+             <button onClick={logout} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors ml-2">
+                 <LogOut className="h-5 w-5" />
+             </button>
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Layout Flexível */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         
-        {/* Sidebar */}
+        {/* SIDEBAR / PAINEL INFERIOR (Mobile) */}
+        {/* Lógica de CSS Complexa para resolver o bug do Mobile Admin */}
         <div className={`
-          absolute md:relative z-[500] md:z-auto
-          w-full md:w-[400px] 
-          h-[65vh] md:h-full 
-          bottom-0 md:bottom-auto
-          bg-white shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.2)] md:shadow-xl border-r border-slate-200
-          flex flex-col
-          transition-transform duration-300
-          ${viewState === 'optimizing' ? 'translate-y-full md:translate-x-full md:hidden' : 'translate-y-0'}
-        `}>
+          z-20 bg-white shadow-xl transition-all duration-300 flex flex-col
           
-          <div className="relative w-full h-full overflow-hidden bg-slate-50">
+          ${/* Mobile Styles */ ""}
+          ${isAdmin && viewState === 'admin-monitor' 
+             ? 'absolute inset-0 z-40 h-full w-full' // Admin Mobile: Full Screen Overlay
+             : 'absolute bottom-0 w-full h-[60vh] rounded-t-2xl' // Driver Mobile: Bottom Sheet
+           }
+
+          ${/* Desktop Styles */ ""}
+          md:relative md:w-[400px] md:h-full md:rounded-none md:border-r md:border-slate-200 md:inset-auto
+
+          ${/* Hide sidebar when optimizing on mobile to show full loader */ ""}
+          ${!isAdmin && viewState === 'optimizing' ? 'translate-y-full md:translate-x-0' : 'translate-y-0'}
+        `}>
             
-            {/* Selection Panel (Driver) */}
-            <div className={`
-                absolute inset-0 w-full h-full flex flex-col 
-                transition-all duration-500 ease-in-out transform
-                ${viewState === 'selection' ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10 pointer-events-none'}
-            `}>
-                 {/* Driver Identity Input */}
-                 <div className="px-5 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                        <UserCircle className="h-5 w-5 text-slate-500" />
-                        {isDriverNameEditing ? (
-                            <input 
-                                autoFocus
-                                type="text" 
-                                value={driverName}
-                                onChange={(e) => setDriverName(e.target.value)}
-                                onBlur={saveDriverName}
-                                onKeyDown={(e) => e.key === 'Enter' && saveDriverName()}
-                                placeholder="Seu Nome / Placa"
-                                className="text-sm bg-white border border-slate-300 rounded px-2 py-1 w-40 outline-none text-[#002855] font-bold"
-                            />
-                        ) : (
-                            <span 
-                                onClick={() => setIsDriverNameEditing(true)}
-                                className="text-sm font-bold text-[#002855] border-b border-dashed border-slate-400 cursor-pointer hover:text-[#FBBF24]"
-                            >
-                                {driverName || "Definir Nome/Placa"}
-                            </span>
-                        )}
-                    </div>
-                    <button onClick={() => setIsDriverNameEditing(!isDriverNameEditing)} className="text-slate-400 hover:text-[#002855]">
-                        <Settings className="h-4 w-4" />
-                    </button>
-                 </div>
+            {/* Header da Sidebar (Arrastável visualmente no mobile - Apenas Motorista) */}
+            {!isAdmin && <div className="w-full h-1 bg-slate-200 md:hidden mx-auto mt-2 mb-1 w-12 rounded-full opacity-50"></div>}
 
-                <div className="p-5 bg-white border-b border-slate-200 shadow-sm z-10">
-                    <div className="flex justify-between items-center mb-1">
+            <div className="flex-1 relative overflow-hidden">
+                
+                {/* PAINEL SELEÇÃO (MOTORISTA) */}
+                <div className={`absolute inset-0 flex flex-col transition-opacity duration-300 ${viewState === 'selection' ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none'}`}>
+                    <div className="px-5 py-4 border-b border-slate-100 bg-white">
                         <h2 className="text-lg font-bold text-[#002855] flex items-center gap-2">
-                            <Package className="h-5 w-5 text-[#FBBF24]" />
-                            Pontos de Entrega
+                            <Package className="h-5 w-5 text-[#FBBF24]" /> Seleção de Entregas
                         </h2>
-                        <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-1 rounded-full border border-slate-200">
-                            {selectedUBS.length}
-                        </span>
-                    </div>
-                    <div className="flex justify-between items-center mt-2">
-                        <p className="text-xs text-slate-500">Selecione os clientes.</p>
-                        <button onClick={selectAll} className="text-xs text-[#002855] font-semibold hover:text-[#FBBF24] transition-colors">
-                            {selectedUBS.length === ITAJAI_UBS_LIST.length ? 'Limpar' : 'Todos'}
-                        </button>
-                    </div>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                    {ITAJAI_UBS_LIST.map((ubs) => (
-                    <div 
-                        key={ubs.id}
-                        onClick={() => toggleUBS(ubs.id)}
-                        className={`
-                        group p-3 rounded-lg cursor-pointer border-l-4 transition-all duration-200
-                        flex items-start gap-3 relative overflow-hidden
-                        ${selectedUBS.includes(ubs.id) 
-                            ? 'bg-white border-l-[#002855] border-t border-r border-b border-slate-200 shadow-md' 
-                            : 'bg-white border-l-transparent border border-slate-100 hover:border-slate-300'
-                        }
-                        `}
-                    >
-                        <div className={`
-                        w-6 h-6 rounded-full border-2 flex items-center justify-center mt-0.5 flex-shrink-0 transition-colors
-                        ${selectedUBS.includes(ubs.id) ? 'bg-[#002855] border-[#002855]' : 'border-slate-300 group-hover:border-[#FBBF24]'}
-                        `}>
-                        {selectedUBS.includes(ubs.id) && <CheckCircle2 className="h-4 w-4 text-white" />}
-                        </div>
-                        <div className="flex-1">
-                          <h3 className={`font-bold text-sm ${selectedUBS.includes(ubs.id) ? 'text-[#002855]' : 'text-slate-700'}`}>
-                              {ubs.name}
-                          </h3>
-                          <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                              <MapPin className="h-3 w-3" /> {ubs.address}
-                          </p>
-                        </div>
-                    </div>
-                    ))}
-                </div>
-
-                <div className="p-4 bg-white border-t border-slate-200 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] z-10">
-                    {error && <div className="bg-red-50 text-red-600 text-xs p-2 rounded mb-3 text-center border border-red-100">{error}</div>}
-                    <button
-                    onClick={handleOptimization}
-                    disabled={selectedUBS.length === 0}
-                    className={`
-                        w-full py-3.5 rounded-lg font-bold text-sm tracking-wide flex items-center justify-center gap-2
-                        transition-all shadow-lg active:scale-[0.98]
-                        ${selectedUBS.length > 0 
-                        ? 'bg-gradient-to-r from-[#FBBF24] to-[#F59E0B] text-[#002855] hover:brightness-110' 
-                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'}
-                    `}
-                    >
-                    <Navigation className="h-5 w-5" />
-                    OTIMIZAR ROTA
-                    </button>
-                </div>
-            </div>
-
-            {/* Admin Monitor Panel (UPDATED FOR MULTIPLE DRIVERS) */}
-             <div className={`
-                absolute inset-0 w-full h-full flex flex-col bg-slate-50
-                transition-all duration-500 ease-in-out transform
-                ${viewState === 'admin-monitor' ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10 pointer-events-none'}
-            `}>
-                <div className="p-5 bg-gradient-to-r from-[#002855] to-[#001f40] text-white shadow-md">
-                    <h2 className="text-lg font-bold flex items-center gap-2 mb-1">
-                        <Truck className="h-5 w-5 text-[#FBBF24]" />
-                        Frota em Tempo Real
-                    </h2>
-                    <p className="text-xs text-blue-200">
-                        {activeDrivers.length} veículo(s) conectado(s).
-                    </p>
-                </div>
-                
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                     <h3 className="text-xs font-bold text-[#002855] uppercase tracking-wider">Entregadores Ativos</h3>
-                     
-                     {activeDrivers.length === 0 ? (
-                         <div className="text-center py-10 bg-white rounded-lg border border-dashed border-slate-300">
-                             <Wifi className="h-8 w-8 text-slate-300 mx-auto mb-2" />
-                             <p className="text-sm text-slate-500 font-medium">Nenhum motorista online.</p>
-                             <p className="text-xs text-slate-400 mt-1">Aguardando conexão...</p>
-                         </div>
-                     ) : (
-                         activeDrivers.map((driver) => (
-                            <div key={driver.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                                <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
-                                    <div className="flex items-center gap-2">
-                                        <div className="w-8 h-8 rounded-full bg-[#002855] text-white flex items-center justify-center font-bold text-xs">
-                                            {driver.name.substring(0, 2).toUpperCase()}
-                                        </div>
-                                        <div>
-                                            <span className="text-sm font-bold text-slate-800 block leading-tight">{driver.name}</span>
-                                            <span className="text-[10px] text-slate-400">ID: {driver.id.substring(0, 8)}</span>
-                                        </div>
-                                    </div>
-                                    <span className="flex items-center gap-1 text-[10px] font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full border border-green-100">
-                                        <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
-                                        ONLINE
-                                    </span>
-                                </div>
-                                <div className="flex justify-between items-center text-xs">
-                                    <span className="text-slate-500">Última atualização:</span>
-                                    <span className="font-bold text-slate-800">{getTimeSinceUpdate(driver.updatedAt)}</span>
-                                </div>
-                            </div>
-                         ))
-                     )}
-                </div>
-            </div>
-
-
-            {/* History Panel */}
-            <div className={`
-                absolute inset-0 w-full h-full flex flex-col bg-white
-                transition-all duration-500 ease-in-out transform
-                ${viewState === 'history' ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10 pointer-events-none'}
-            `}>
-                <div className="p-5 bg-[#002855] text-white shadow-md">
-                    <h2 className="text-lg font-bold flex items-center gap-2 mb-3">
-                        <History className="h-5 w-5 text-[#FBBF24]" />
-                        Histórico
-                    </h2>
-                    <div className="relative group cursor-pointer">
-                        <div className="flex items-center justify-between bg-[#003366] group-hover:bg-[#004080] p-3 rounded-lg border border-[#004080] transition-colors">
-                            <div className="flex items-center gap-2">
-                                <Calendar className="h-5 w-5 text-[#FBBF24]" />
-                                <span className="text-sm text-blue-100">Data:</span>
-                            </div>
-                            <span className="text-base font-bold text-white tracking-wide">
-                                {new Date(historyDateFilter).toLocaleDateString('pt-BR')}
-                            </span>
-                        </div>
-                        <input 
-                            type="date" 
-                            value={historyDateFilter}
-                            onChange={(e) => setHistoryDateFilter(e.target.value)}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
-                            style={{ display: 'block' }} 
-                        />
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
-                    {filteredHistory.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                            <CheckSquare className="h-12 w-12 mb-2 opacity-20" />
-                            <p className="text-sm">Nenhuma entrega.</p>
-                        </div>
-                    ) : (
-                        <div className="space-y-3">
-                             {filteredHistory.map((item) => (
-                                <div key={item.id} className="bg-white p-3 rounded-lg border-l-4 border-l-green-500 shadow-sm flex flex-col gap-1">
-                                    <div className="flex justify-between items-start">
-                                        <h3 className="font-bold text-slate-800 text-sm">{item.stopName}</h3>
-                                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                                            <Clock className="h-3 w-3" /> {item.completedAt}
-                                        </span>
-                                    </div>
-                                    <p className="text-xs text-slate-500">{item.address}</p>
-                                    {item.notes && (
-                                        <div className="mt-2 bg-yellow-50 p-2 rounded border border-yellow-100">
-                                            <p className="text-[11px] text-yellow-800 italic flex items-start gap-1">
-                                                <MessageSquare className="h-3 w-3 mt-0.5 flex-shrink-0" /> 
-                                                "{item.notes}"
-                                            </p>
-                                        </div>
-                                    )}
-                                </div>
-                             ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Result Panel */}
-            <div className={`
-                absolute inset-0 w-full h-full flex flex-col bg-white
-                transition-all duration-500 ease-in-out transform
-                ${viewState === 'result' ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10 pointer-events-none'}
-            `}>
-                {optimizationResult && (
-                    <>
-                    <div className="p-5 bg-[#F0FDF4] border-b border-green-100">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-green-100 p-2 rounded-full">
-                                <CheckCircle2 className="h-6 w-6 text-green-600" />
-                            </div>
-                            <div>
-                                <h2 className="text-lg font-bold text-green-800">Rota Otimizada</h2>
-                                <p className="text-xs text-green-700 font-medium">
-                                    Total: <span className="bg-green-200 px-1.5 py-0.5 rounded text-green-900">{optimizationResult.totalDistanceEst}</span>
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="p-4 bg-blue-50/50 border-b border-blue-100">
-                        <p className="text-sm text-blue-900 italic leading-relaxed">
-                            <span className="font-bold not-italic mr-1">Resumo IA:</span> 
-                            {optimizationResult.summary}
-                        </p>
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
-                        <div className="mb-6 px-3">
-                            <button
-                                onClick={handleNavigateAll}
-                                className="w-full bg-[#002855] hover:bg-[#003366] text-[#FBBF24] font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition-colors border-2 border-[#FBBF24]"
-                            >
-                                <MapIcon className="h-5 w-5" />
-                                ABRIR ROTA NO MAPS
+                        <div className="flex justify-between items-center mt-2">
+                            <span className="text-xs font-medium bg-slate-100 px-2 py-1 rounded text-slate-600">{selectedUBS.length} locais</span>
+                            <button onClick={selectAll} className="text-xs font-bold text-[#002855] hover:underline">
+                                {selectedUBS.length === ITAJAI_UBS_LIST.length ? 'Limpar' : 'Selecionar Todos'}
                             </button>
                         </div>
-
-                        <div className="relative border-l-2 border-slate-300 ml-3 space-y-6 pb-6">
-                            <div className="relative pl-8">
-                                <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-green-500 border-2 border-white shadow ring-4 ring-green-50"></div>
-                                <div className="flex flex-col">
-                                    <span className="text-[10px] font-extrabold text-green-600 uppercase tracking-widest mb-1">Início</span>
-                                    <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
-                                        <p className="text-sm font-bold text-slate-800">Local Atual</p>
-                                    </div>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto p-2 bg-slate-50 space-y-2">
+                        {ITAJAI_UBS_LIST.map(ubs => (
+                            <div key={ubs.id} onClick={() => toggleUBS(ubs.id)}
+                                className={`p-3 rounded-lg border cursor-pointer flex items-center gap-3 transition-all ${selectedUBS.includes(ubs.id) ? 'bg-blue-50 border-[#002855]' : 'bg-white border-slate-200 hover:border-blue-300'}`}>
+                                <div className={`w-5 h-5 rounded flex items-center justify-center border ${selectedUBS.includes(ubs.id) ? 'bg-[#002855] border-[#002855] text-white' : 'border-slate-300'}`}>
+                                    {selectedUBS.includes(ubs.id) && <CheckCircle2 className="h-3.5 w-3.5" />}
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-slate-800">{ubs.name}</h3>
+                                    <p className="text-[10px] text-slate-500 truncate w-48">{ubs.address}</p>
                                 </div>
                             </div>
+                        ))}
+                    </div>
 
-                            {optimizationResult.route.map((stop, idx) => {
-                                const isCompleted = stop.status === 'completed';
-                                return (
-                                <div key={stop.id} className={`relative pl-8 transition-all duration-500 ${isCompleted ? 'opacity-60 grayscale-[0.8]' : 'opacity-100'}`}>
-                                    <div className={`
-                                        absolute -left-[12px] top-0 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-[11px] font-bold z-10 transition-colors
-                                        ${isCompleted ? 'bg-green-600 text-white' : 'bg-[#002855] text-[#FBBF24]'}
-                                    `}>
-                                    {isCompleted ? <CheckCircle2 className="h-3 w-3" /> : stop.sequence}
-                                    </div>
-                                    
-                                    <div className={`
-                                        bg-white p-3 rounded-lg border shadow-sm transition-all group
-                                        ${isCompleted ? 'border-green-200 bg-green-50' : 'border-slate-200 hover:shadow-md'}
-                                    `}>
-                                        <div className="flex justify-between items-start">
-                                            <div>
-                                                <h3 className={`text-sm font-bold ${isCompleted ? 'text-green-800 line-through' : 'text-[#002855]'}`}>{stop.name}</h3>
-                                                <p className="text-xs text-slate-500 mt-1">{stop.address}</p>
-                                            </div>
-                                            {isCompleted && (
-                                                <span className="text-[10px] bg-green-200 text-green-800 px-1.5 py-0.5 rounded font-bold">
-                                                    Feito: {stop.completedAt}
-                                                </span>
-                                            )}
-                                        </div>
-                                        
-                                        {!isCompleted && (
-                                            <div className="flex gap-2 mt-3">
-                                                <a 
-                                                    href={`https://www.google.com/maps/dir/?api=1&destination=${stop.coords.lat},${stop.coords.lng}`}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-slate-50 hover:bg-blue-50 text-[#002855] text-xs font-bold rounded border border-slate-200 hover:border-blue-200 transition-colors"
-                                                >
-                                                    <Navigation className="h-3.5 w-3.5" /> IR
-                                                </a>
-                                                <button
-                                                    onClick={() => openConfirmModal(stop.id)}
-                                                    className="flex-1 flex items-center justify-center gap-2 py-2 bg-[#FBBF24] hover:bg-[#F59E0B] text-[#002855] text-xs font-bold rounded shadow-sm transition-colors"
-                                                >
-                                                    <CheckSquare className="h-3.5 w-3.5" /> OK
-                                                </button>
-                                            </div>
-                                        )}
-                                        {isCompleted && stop.notes && (
-                                            <div className="mt-2 text-xs text-slate-600 italic border-t pt-2 flex items-start gap-1">
-                                                <MessageSquare className="h-3 w-3 flex-shrink-0 mt-0.5 text-slate-400" /> "{stop.notes}"
-                                            </div>
-                                        )}
-                                    </div>
-                                    {idx !== optimizationResult.route.length - 1 && (
-                                        <div className="absolute left-[-1px] top-6 bottom-[-24px] w-0.5 border-l-2 border-dashed border-slate-300"></div>
-                                    )}
-                                </div>
-                            )})}
+                    <div className="p-4 bg-white border-t border-slate-200">
+                        {error && <div className="text-red-500 text-xs text-center mb-2">{error}</div>}
+                        <div className="flex gap-2">
+                             <button onClick={() => setViewState('history')} className="px-4 py-3 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+                                 <History className="h-5 w-5" />
+                             </button>
+                             <button onClick={handleOptimization} disabled={selectedUBS.length === 0} className="flex-1 bg-[#002855] text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 shadow-lg hover:bg-[#003366] disabled:opacity-50 disabled:cursor-not-allowed">
+                                 <Navigation className="h-5 w-5 text-[#FBBF24]" /> OTIMIZAR ROTA
+                             </button>
                         </div>
                     </div>
-                    </>
-                )}
-            </div>
-            
-          </div>
-        </div>
+                </div>
 
-        {/* Loading Overlay */}
-        {loading && (
-          <div className="absolute inset-0 z-[1000] bg-[#002855]/90 backdrop-blur-sm flex flex-col items-center justify-center text-white">
-            <Loader2 className="h-16 w-16 text-[#FBBF24] animate-spin mb-6" />
-            <h2 className="text-2xl font-bold tracking-tight">Otimizando Logística...</h2>
-            <p className="text-blue-200 text-sm mt-3 text-center max-w-sm px-4">
-              Nossa IA está calculando a rota mais eficiente considerando o trânsito e a geografia de Itajaí.
-            </p>
-          </div>
-        )}
-
-        {/* Login Modal */}
-        {showLoginModal && (
-            <div className="absolute inset-0 z-[2000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-                <div className="bg-white w-full max-w-xs rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                    <div className="bg-[#002855] p-6 text-center">
-                        <div className="mx-auto w-12 h-12 bg-[#FBBF24] rounded-full flex items-center justify-center mb-3 text-[#002855]">
-                             <Lock className="h-6 w-6" />
-                        </div>
-                        <h3 className="text-white font-bold text-lg">Acesso Restrito</h3>
-                        <p className="text-blue-200 text-xs">Apenas para gestores</p>
-                    </div>
-                    <div className="p-6">
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">Usuário</label>
-                                <div className="relative">
-                                    <User className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                                    <input 
-                                        type="text" 
-                                        value={username}
-                                        onChange={(e) => setUsername(e.target.value)}
-                                        className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#002855]"
-                                        placeholder="admin"
-                                    />
+                {/* PAINEL RESULTADO (MOTORISTA) */}
+                <div className={`absolute inset-0 flex flex-col bg-white transition-opacity duration-300 ${viewState === 'result' ? 'opacity-100 z-10' : 'opacity-0 pointer-events-none'}`}>
+                     {optimizationResult && (
+                         <>
+                            <div className="p-4 bg-[#002855] text-white flex justify-between items-center shadow-md">
+                                <div>
+                                    <h2 className="font-bold text-lg flex items-center gap-2"><MapIcon className="h-5 w-5 text-[#FBBF24]"/> Rota Pronta</h2>
+                                    <p className="text-xs text-blue-200">{optimizationResult.totalDistanceEst} • {optimizationResult.route.filter(s => s.status !== 'completed').length} pendentes</p>
                                 </div>
-                            </div>
-                            <div>
-                                <label className="block text-xs font-bold text-slate-500 mb-1">Senha</label>
-                                <div className="relative">
-                                    <Lock className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                                    <input 
-                                        type="password" 
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#002855]"
-                                        placeholder="••••••••"
-                                    />
-                                </div>
+                                <button onClick={() => { setViewState('selection'); setOptimizationResult(null); setSelectedUBS([]); }} className="text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded transition-colors">
+                                    Nova Rota
+                                </button>
                             </div>
                             
-                            {loginError && (
-                                <p className="text-red-500 text-xs font-bold text-center">{loginError}</p>
-                            )}
+                            <div className="p-3 bg-blue-50 border-b border-blue-100 text-xs text-blue-800 italic">
+                                "{optimizationResult.summary}"
+                            </div>
 
-                            <button 
-                                onClick={handleLogin}
-                                className="w-full py-2.5 text-[#002855] font-bold text-sm bg-[#FBBF24] hover:bg-[#F59E0B] rounded-lg shadow-md transition-colors"
-                            >
-                                ACESSAR PAINEL
-                            </button>
-                            <button 
-                                onClick={() => {
-                                    setShowLoginModal(false);
-                                    setLoginError('');
-                                    setUsername('');
-                                    setPassword('');
-                                }}
-                                className="w-full py-2 text-slate-500 font-bold text-xs hover:text-slate-700"
-                            >
-                                Cancelar
-                            </button>
-                        </div>
+                            <div className="flex-1 overflow-y-auto bg-slate-50 p-3 pb-20">
+                                <button onClick={handleNavigateAll} className="w-full bg-[#FBBF24] text-[#002855] font-bold py-3 mb-4 rounded-lg shadow flex items-center justify-center gap-2 hover:brightness-105">
+                                    <Navigation className="h-5 w-5" /> NAVEGAR ROTA COMPLETA
+                                </button>
+                                
+                                <div className="space-y-4 pl-4 relative border-l-2 border-slate-300 ml-2">
+                                    {optimizationResult.route.map((stop, idx) => (
+                                        <div key={stop.id} className={`relative pl-6 ${stop.status === 'completed' ? 'opacity-50' : ''}`}>
+                                            <div className={`absolute -left-[9px] top-0 w-4 h-4 rounded-full border-2 border-white shadow ${stop.status === 'completed' ? 'bg-green-500' : 'bg-[#002855]'}`}></div>
+                                            <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
+                                                <div className="flex justify-between">
+                                                    <span className="text-xs font-bold text-[#FBBF24] uppercase mb-1">Parada {stop.sequence}</span>
+                                                    {stop.status === 'completed' && <span className="text-[10px] text-green-600 font-bold flex items-center gap-1"><CheckSquare className="h-3 w-3"/> Entregue {stop.completedAt}</span>}
+                                                </div>
+                                                <h3 className="font-bold text-slate-800 text-sm">{stop.name}</h3>
+                                                <p className="text-xs text-slate-500 mb-3">{stop.address}</p>
+                                                
+                                                {stop.status !== 'completed' && (
+                                                    <div className="flex gap-2">
+                                                        <a href={`https://www.google.com/maps/dir/?api=1&destination=${stop.coords.lat},${stop.coords.lng}`} target="_blank" rel="noreferrer" 
+                                                           className="flex-1 py-2 bg-slate-100 text-slate-600 text-xs font-bold rounded text-center hover:bg-slate-200">
+                                                            Ver Mapa
+                                                        </a>
+                                                        <button onClick={() => setConfirmModal({isOpen: true, stopId: stop.id})} 
+                                                                className="flex-1 py-2 bg-[#002855] text-white text-xs font-bold rounded hover:bg-[#003366]">
+                                                            Confirmar
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                         </>
+                     )}
+                </div>
+
+                {/* PAINEL ADMIN (GESTOR) */}
+                <div className={`absolute inset-0 flex flex-col bg-slate-100 transition-opacity duration-300 ${viewState === 'admin-monitor' ? 'opacity-100 z-50' : 'opacity-0 pointer-events-none'}`}>
+                     <div className="bg-white p-4 shadow-sm border-b border-slate-200 sticky top-0 z-10">
+                         <h2 className="text-lg font-bold text-[#002855] flex items-center gap-2">
+                             <Truck className="h-5 w-5 text-[#FBBF24]" /> Frota Online ({activeDrivers.length})
+                         </h2>
+                         <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
+                             <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-bold">
+                                 {activeDrivers.filter(d => d.status === 'online').length} Online
+                             </span>
+                             <span className="text-xs bg-slate-100 text-slate-500 px-2 py-1 rounded-full font-bold">
+                                 {activeDrivers.filter(d => d.status !== 'online').length} Offline
+                             </span>
+                         </div>
+                     </div>
+                     
+                     <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                         {activeDrivers.length === 0 ? (
+                             <div className="text-center py-10 text-slate-400">
+                                 <Wifi className="h-10 w-10 mx-auto mb-2 opacity-50"/>
+                                 <p className="text-sm">Nenhum motorista conectado.</p>
+                             </div>
+                         ) : (
+                             activeDrivers.map(driver => (
+                                 <div key={driver.id} className={`bg-white p-3 rounded-lg border shadow-sm ${driver.status === 'online' ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-slate-300 opacity-70'}`}>
+                                     <div className="flex justify-between items-start">
+                                         <div>
+                                             <h3 className="font-bold text-[#002855]">{driver.name}</h3>
+                                             <p className="text-[10px] text-slate-400 uppercase tracking-wider">ID: {driver.id.substring(0,8)}</p>
+                                         </div>
+                                         <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${driver.status === 'online' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                                             {driver.status}
+                                         </div>
+                                     </div>
+                                     <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
+                                         <span className="text-slate-500">Último sinal: {new Date(driver.updatedAt).toLocaleTimeString()}</span>
+                                         {driver.status === 'online' && <MapPin className="h-3 w-3 text-red-500" />}
+                                     </div>
+                                 </div>
+                             ))
+                         )}
+                     </div>
+                </div>
+
+                {/* PAINEL HISTORICO */}
+                <div className={`absolute inset-0 flex flex-col bg-white transition-opacity duration-300 ${viewState === 'history' ? 'opacity-100 z-20' : 'opacity-0 pointer-events-none'}`}>
+                    <div className="p-4 bg-[#002855] text-white flex justify-between items-center">
+                        <h2 className="font-bold flex items-center gap-2"><History className="h-5 w-5 text-[#FBBF24]"/> Histórico</h2>
+                        <button onClick={() => setViewState(driverId ? 'selection' : 'login')} className="text-white hover:text-[#FBBF24]"><X className="h-6 w-6"/></button>
+                    </div>
+                    <div className="p-3 bg-slate-100 border-b">
+                         <input type="date" value={historyDateFilter} onChange={e => setHistoryDateFilter(e.target.value)} className="w-full p-2 rounded border border-slate-300 text-sm"/>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-slate-50">
+                        {history.filter(h => h.date === historyDateFilter).length === 0 ? (
+                            <p className="text-center text-slate-400 text-sm mt-10">Nada registrado nesta data.</p>
+                        ) : (
+                            history.filter(h => h.date === historyDateFilter).map(h => (
+                                <div key={h.id} className="bg-white p-3 rounded shadow-sm border border-slate-200">
+                                    <div className="flex justify-between">
+                                        <span className="font-bold text-[#002855] text-sm">{h.stopName}</span>
+                                        <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-bold">{h.completedAt}</span>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1">{h.address}</p>
+                                    {h.notes && <div className="mt-2 bg-yellow-50 p-2 rounded text-[11px] text-yellow-800 italic">"{h.notes}"</div>}
+                                </div>
+                            ))
+                        )}
                     </div>
                 </div>
+            
             </div>
-        )}
-
-        {/* Confirmation Modal */}
-        {confirmModal.isOpen && (
-            <div className="absolute inset-0 z-[2000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-                <div className="bg-white w-full max-w-sm rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
-                    <div className="bg-[#002855] p-4 flex justify-between items-center">
-                        <h3 className="text-white font-bold flex items-center gap-2">
-                            <CheckSquare className="h-5 w-5 text-[#FBBF24]" />
-                            Confirmar Entrega
-                        </h3>
-                        <button onClick={() => setConfirmModal({isOpen: false, stopId: null})} className="text-white/70 hover:text-white">
-                            <X className="h-5 w-5" />
-                        </button>
-                    </div>
-                    <div className="p-5">
-                        <p className="text-sm text-slate-600 mb-4">
-                            Deseja confirmar a entrega para: <br/>
-                            <span className="font-bold text-[#002855] text-base">
-                                {optimizationResult?.route.find(s => s.id === confirmModal.stopId)?.name}
-                            </span>
-                        </p>
-                        
-                        <label className="block text-xs font-bold text-slate-500 mb-2">Observações (Opcional)</label>
-                        <textarea
-                            value={noteText}
-                            onChange={(e) => setNoteText(e.target.value)}
-                            placeholder="Ex: Recebido pelo porteiro..."
-                            className="w-full p-3 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#002855] min-h-[80px]"
-                        ></textarea>
-
-                        <div className="flex gap-3 mt-5">
-                            <button 
-                                onClick={() => setConfirmModal({isOpen: false, stopId: null})}
-                                className="flex-1 py-3 text-slate-600 font-bold text-sm bg-slate-100 hover:bg-slate-200 rounded-lg"
-                            >
-                                Cancelar
-                            </button>
-                            <button 
-                                onClick={handleConfirmDelivery}
-                                className="flex-1 py-3 text-[#002855] font-bold text-sm bg-[#FBBF24] hover:bg-[#F59E0B] rounded-lg shadow-md"
-                            >
-                                Confirmar
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        {/* Map Area */}
-        <div className="flex-1 h-[40vh] md:h-full relative z-0">
-          <MapComponent 
-            currentLocation={currentLocation}
-            selectedUBS={selectedUBSObjects}
-            optimizedRoute={optimizationResult?.route || null}
-            activeDrivers={isAdmin && viewState === 'admin-monitor' ? activeDrivers : undefined}
-          />
         </div>
+
+        {/* MAP AREA */}
+        <div className={`flex-1 relative z-0 transition-all duration-300 ${viewState === 'admin-monitor' ? 'h-[50vh] md:h-full order-first md:order-last' : 'h-[40vh] md:h-full'}`}>
+             <MapComponent 
+                 currentLocation={currentLocation}
+                 selectedUBS={ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id))}
+                 optimizedRoute={optimizationResult?.route || null}
+                 activeDrivers={isAdmin && viewState === 'admin-monitor' ? activeDrivers : undefined}
+             />
+        </div>
+
+        {/* LOADING OVERLAY */}
+        {loading && (
+            <div className="fixed inset-0 z-[100] bg-[#002855]/90 backdrop-blur-sm flex flex-col items-center justify-center text-white">
+                <Loader2 className="h-16 w-16 text-[#FBBF24] animate-spin mb-4" />
+                <h3 className="text-xl font-bold">Calculando Rota...</h3>
+                <p className="text-sm text-blue-200">Otimizando trajetos com IA</p>
+            </div>
+        )}
+
+        {/* MODAL CONFIRMAÇÃO */}
+        {confirmModal.isOpen && (
+            <div className="fixed inset-0 z-[200] bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white w-full max-w-sm rounded-xl overflow-hidden shadow-2xl animate-in zoom-in duration-200">
+                    <div className="bg-[#002855] p-4 text-white font-bold flex justify-between items-center">
+                        Confirmar Entrega
+                        <button onClick={() => setConfirmModal({isOpen: false, stopId: null})}><X className="h-5 w-5"/></button>
+                    </div>
+                    <div className="p-4">
+                         <p className="text-sm text-slate-600 mb-3">Observações (Opcional):</p>
+                         <textarea 
+                             className="w-full border border-slate-300 rounded p-2 text-sm h-24 focus:ring-2 focus:ring-[#002855] outline-none"
+                             placeholder="Ex: Recebido por..."
+                             value={noteText}
+                             onChange={e => setNoteText(e.target.value)}
+                         ></textarea>
+                         <button onClick={handleConfirmDelivery} className="w-full bg-[#FBBF24] text-[#002855] font-bold py-3 rounded-lg mt-4 hover:brightness-105">
+                             FINALIZAR ENTREGA
+                         </button>
+                    </div>
+                </div>
+            </div>
+        )}
 
       </div>
     </div>

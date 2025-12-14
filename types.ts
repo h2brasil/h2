@@ -39,6 +39,8 @@ export interface ActiveDriver {
   lat: number;
   lng: number;
   updatedAt: number;
+  status: 'online' | 'offline' | 'busy';
+  currentDestination?: string;
 }
 
-export type ViewState = 'selection' | 'optimizing' | 'result' | 'history' | 'admin-monitor';
+export type ViewState = 'login' | 'selection' | 'optimizing' | 'result' | 'history' | 'admin-monitor';
