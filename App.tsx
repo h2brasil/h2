@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi } from 'lucide-react';
+import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi, Map as MapIcon } from 'lucide-react';
 import { ITAJAI_UBS_LIST } from './constants';
 import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem } from './types';
 import MapComponent from './components/Map';
@@ -274,6 +274,40 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // --- NOVA FUNÇÃO: NAVEGAR ROTA COMPLETA ---
+  const handleNavigateAll = () => {
+    if (!currentLocation || !optimizationResult) return;
+
+    // Filtra apenas as entregas que NÃO foram concluídas
+    const pendingStops = optimizationResult.route.filter(s => s.status !== 'completed');
+    
+    if (pendingStops.length === 0) {
+        alert("Todas as entregas foram concluídas!");
+        return;
+    }
+
+    // Origem: Onde o motorista está agora
+    const origin = `${currentLocation.lat},${currentLocation.lng}`;
+    
+    // Destino: A última parada da lista
+    const lastStop = pendingStops[pendingStops.length - 1];
+    const destination = `${lastStop.coords.lat},${lastStop.coords.lng}`;
+    
+    // Waypoints: Todas as paradas ENTRE a origem e o destino final
+    // O Google Maps aceita paradas separadas por pipe '|'
+    const waypoints = pendingStops.slice(0, pendingStops.length - 1)
+        .map(s => `${s.coords.lat},${s.coords.lng}`)
+        .join('|');
+
+    // Constrói URL
+    let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
+    if (waypoints) {
+        url += `&waypoints=${waypoints}`;
+    }
+    
+    window.open(url, '_blank');
   };
 
   const openConfirmModal = (stopId: string) => {
@@ -698,6 +732,21 @@ export default function App() {
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
+                        
+                        {/* BOTÃO NAVEGAR TUDO */}
+                        <div className="mb-6 px-3">
+                            <button
+                                onClick={handleNavigateAll}
+                                className="w-full bg-[#002855] hover:bg-[#003366] text-[#FBBF24] font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition-colors border-2 border-[#FBBF24]"
+                            >
+                                <MapIcon className="h-5 w-5" />
+                                ABRIR ROTA COMPLETA NO MAPS
+                            </button>
+                            <p className="text-[10px] text-center text-slate-400 mt-2">
+                                Abre o Google Maps com todas as paradas em sequência.
+                            </p>
+                        </div>
+
                         <div className="relative border-l-2 border-slate-300 ml-3 space-y-6 pb-6">
                             {/* Start Point */}
                             <div className="relative pl-8">
