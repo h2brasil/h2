@@ -476,7 +476,7 @@ export default function App() {
           
           ${/* Mobile Styles */ ""}
           ${isAdmin && viewState === 'admin-monitor' 
-             ? 'absolute inset-0 z-40 h-full w-full' // Admin Mobile: Full Screen Overlay
+             ? 'absolute bottom-0 w-full h-[50vh] rounded-t-2xl border-t border-slate-300' // Admin Mobile: Half Screen List (Fix White Screen)
              : 'absolute bottom-0 w-full h-[60vh] rounded-t-2xl' // Driver Mobile: Bottom Sheet
            }
 
