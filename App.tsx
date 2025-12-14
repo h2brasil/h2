@@ -5,15 +5,29 @@ import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem } 
 import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
-// Firebase Imports
-import { initializeApp } from "firebase/app";
-import { getDatabase, ref, set, onValue, push } from "firebase/database";
+// Firebase Imports - Adapter for compatibility with environments where modular imports fail
+import firebase from "firebase/app";
+import "firebase/database";
+
+// Adapter functions to mimic Modular SDK (v9) using Namespaced SDK (v8)
+// This fixes the "has no exported member 'initializeApp'" error when types mismatch
+const initializeApp = (config: any) => {
+  if (!firebase.apps.length) return firebase.initializeApp(config);
+  return firebase.app();
+};
+const getDatabase = (app?: any) => firebase.database();
+const ref = (db: any, path: string) => db.ref(path);
+const set = (ref: any, val: any) => ref.set(val);
+const push = (ref: any) => ref.push();
+const onValue = (ref: any, cb: (snap: any) => void, errCb?: (err: any) => void) => {
+  ref.on('value', cb, errCb);
+  return () => ref.off('value', cb);
+};
 
 // Configuração do Firebase fornecida pelo usuário
 const firebaseConfig = {
   apiKey: "AIzaSyCuPiygb1O_hQaYT5LK7d6c0t_4_EyIz6s",
   authDomain: "h2brasil-20834.firebaseapp.com",
-  // URL corrigida para o Realtime Database
   databaseURL: "https://h2brasil-20834-default-rtdb.firebaseio.com",
   projectId: "h2brasil-20834",
   storageBucket: "h2brasil-20834.firebasestorage.app",
@@ -21,22 +35,23 @@ const firebaseConfig = {
   appId: "1:344038367500:web:77a23899f7644bf671e929"
 };
 
-// Inicializa o Firebase com tratamento de erro
+// Inicializa o Firebase com tratamento de erro robusto
 let app;
 let db: any = null;
 let firebaseErrorMsg = "";
 
 try {
   app = initializeApp(firebaseConfig);
-  // Tenta obter a instância do banco de dados
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
-  // Traduz mensagem comum de erro de versão
-  if (error.message.includes("Service database is not available")) {
-      firebaseErrorMsg = "Erro de Versão: Limpe o cache do navegador e recarregue.";
+  // O erro "Service database is not available" ocorre quando há conflito de versões
+  if (error.message && error.message.includes("Service database is not available")) {
+      firebaseErrorMsg = "Conflito de Versão do Firebase: O banco de dados não pôde ser carregado. Tente recarregar a página.";
+  } else if (error.code === 'app/no-app') {
+      firebaseErrorMsg = "Erro de Inicialização do App.";
   } else {
-      firebaseErrorMsg = "Conexão com Banco de Dados falhou: " + error.message;
+      firebaseErrorMsg = "Conexão com Banco de Dados falhou: " + (error.message || "Erro desconhecido");
   }
 }
 
@@ -65,6 +80,7 @@ export default function App() {
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
   const [viewState, setViewState] = useState<ViewState>('selection');
   const [loading, setLoading] = useState(false);
+  // Se houver erro de inicialização do firebase, mostramos isso, senão erro normal
   const [error, setError] = useState<string | null>(firebaseErrorMsg || null);
   
   // Admin State
@@ -85,13 +101,13 @@ export default function App() {
   const [noteText, setNoteText] = useState('');
 
   // --- LÓGICA DE HISTÓRICO NO BANCO DE DADOS ---
-  // Substitui o localStorage pelo Firebase
   useEffect(() => {
     if (!db) return;
 
     // Escuta mudanças na pasta 'history' do banco de dados
     const historyRef = ref(db, 'history');
     
+    // onValue é a forma modular de ler dados
     const unsubscribe = onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -99,7 +115,6 @@ export default function App() {
         const historyArray = Object.values(data) as DeliveryHistoryItem[];
         // Ordena do mais recente para o mais antigo
         const sortedHistory = historyArray.sort((a, b) => {
-           // Fallback simples para ordenação se não tiver timestamp numérico, usando string ISO/Time
            return (b.date + b.completedAt).localeCompare(a.date + a.completedAt);
         });
         setHistory(sortedHistory);
@@ -108,9 +123,9 @@ export default function App() {
       }
     }, (error) => {
       console.error("Erro ao ler histórico:", error);
-      // Se houver erro de permissão ou chave, mostra na tela
-      if (error.message.includes("permission_denied") || error.message.includes("API key not valid")) {
-        setError("Erro de acesso ao Banco de Dados: Verifique a API Key.");
+      // Não sobrescreve erro principal se for apenas permissão
+      if (!firebaseErrorMsg) {
+         setError("Erro ao ler banco de dados. Verifique sua conexão ou permissões.");
       }
     });
 
@@ -127,8 +142,8 @@ export default function App() {
       let watchId: number;
 
       // Se NÃO for admin, é o entregador. Vamos monitorar a posição dele.
-      // Se db for nulo, não tenta usar para evitar crash
-      if (!isAdmin && navigator.geolocation && db) {
+      // Importante: verificar se db existe antes de tentar escrever
+      if (!isAdmin && navigator.geolocation) {
           watchId = navigator.geolocation.watchPosition(
               (position) => {
                   const { latitude, longitude } = position.coords;
@@ -139,14 +154,15 @@ export default function App() {
                   setLocationStatus('found');
 
                   // *** ENVIA PARA FIREBASE ***
-                  set(ref(db, 'drivers/current'), { 
-                    lat: latitude, 
-                    lng: longitude,
-                    updatedAt: Date.now()
-                  }).catch(err => {
-                      console.error("Erro ao enviar localização:", err);
-                      // Não mostra erro na UI aqui para não spamar o motorista, só console
-                  });
+                  if (db) {
+                    set(ref(db, 'drivers/current'), { 
+                      lat: latitude, 
+                      lng: longitude,
+                      updatedAt: Date.now()
+                    }).catch((err: any) => {
+                        console.error("Erro ao enviar localização:", err);
+                    });
+                  }
               },
               (err) => {
                   console.error("Erro no rastreamento:", err);
@@ -154,19 +170,7 @@ export default function App() {
               },
               { enableHighAccuracy: true }
           );
-      } else if (!db) {
-        // Se o banco falhar, não crasha, apenas avisa no console
-        console.warn("Firebase DB indisponível. Rastreamento apenas local.");
-        // Ainda tenta pegar localização localmente para roteirização funcionar
-        if (navigator.geolocation) {
-             watchId = navigator.geolocation.watchPosition(
-                (position) => {
-                    setCurrentLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
-                    setLocationStatus('found');
-                }
-             );
-        }
-      }
+      } 
 
       return () => {
           if (watchId) navigator.geolocation.clearWatch(watchId);
@@ -185,9 +189,6 @@ export default function App() {
                   setAdminTrackingLocation({ lat: data.lat, lng: data.lng });
                   setLastUpdate(data.updatedAt);
               }
-          }, (error) => {
-              console.error("Erro monitoramento:", error);
-              setError("Erro de acesso ao monitoramento.");
           });
 
           return () => unsubscribe();
@@ -273,9 +274,15 @@ export default function App() {
       setOptimizationResult(result);
       setViewState('result');
     } catch (e: any) {
-      console.error(e);
-      // Mostra a mensagem real do erro para o usuário (ex: "Chave de API não configurada")
-      setError(e.message || "Falha ao calcular logística. Verifique conexão.");
+      console.error("Erro na Otimização:", e);
+      let msg = e.message || "Falha ao calcular logística.";
+      
+      // Detecção específica do erro de API Key da IA
+      if (JSON.stringify(e).includes("API key not valid") || msg.includes("API key not valid")) {
+          msg = "ERRO NA IA: A chave de API do Gemini (IA) é inválida. Verifique o arquivo .env ou a configuração.";
+      }
+      
+      setError(msg);
       setViewState('selection');
     } finally {
       setLoading(false);
@@ -311,7 +318,6 @@ export default function App() {
     setOptimizationResult({ ...optimizationResult, route: updatedRoute });
 
     // 2. Salva no Banco de Dados (Firebase)
-    // Isso disparará o listener do useEffect 'history' e atualizará a lista automaticamente
     const stopDetails = optimizationResult.route.find(s => s.id === stopId);
     if (stopDetails && db) {
         const newHistoryItem: DeliveryHistoryItem = {
@@ -324,14 +330,15 @@ export default function App() {
         };
 
         // Cria uma nova entrada na lista 'history'
+        // push() gera uma chave única
         const newListRef = push(ref(db, 'history'));
         set(newListRef, newHistoryItem)
-          .catch((err) => {
+          .catch((err: any) => {
             console.error("Erro ao salvar histórico:", err);
-            setError("Erro ao salvar no banco de dados. Verifique a internet e a API Key.");
+            setError("Erro ao salvar no banco de dados. Verifique a internet.");
           });
     } else if (!db) {
-        setError("Banco de dados desconectado. Histórico não salvo.");
+        setError("Banco de dados desconectado. Histórico salvo apenas localmente (será perdido ao recarregar).");
     }
     
     // Close Modal
@@ -345,7 +352,6 @@ export default function App() {
 
   const toggleHistory = () => {
     if (isAdmin) {
-        // Se for admin, não altera para histórico, pois ele tem o painel dele
         return; 
     }
     if (viewState === 'history') {
