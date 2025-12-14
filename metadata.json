@@ -1,0 +1,7 @@
+{
+  "name": "H2 Brasil Distribuidora",
+  "description": "Sistema de roteirização logística inteligente para a H2 Brasil Distribuidora.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
