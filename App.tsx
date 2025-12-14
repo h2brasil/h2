@@ -52,6 +52,32 @@ const H2Logo = () => (
   </svg>
 );
 
+// Error Boundary para evitar tela branca total
+class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Erro capturado:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-full w-full flex flex-col items-center justify-center bg-slate-100 text-slate-500 p-4 text-center">
+            <AlertTriangle className="h-8 w-8 mb-2 text-yellow-500" />
+            <p>Erro ao carregar o mapa.</p>
+            <button onClick={() => this.setState({hasError: false})} className="mt-2 text-blue-600 underline text-sm">Tentar novamente</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   // App State
   const [viewState, setViewState] = useState<ViewState>('login');
@@ -665,12 +691,14 @@ export default function App() {
 
         {/* MAP AREA - ALWAYS VISIBLE, FILLS SPACE */}
         <div className="flex-1 relative z-0 h-full w-full">
-             <MapComponent 
-                 currentLocation={currentLocation}
-                 selectedUBS={ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id))}
-                 optimizedRoute={optimizationResult?.route || null}
-                 activeDrivers={isAdmin && viewState === 'admin-monitor' ? activeDrivers : undefined}
-             />
+            <ErrorBoundary>
+                 <MapComponent 
+                     currentLocation={currentLocation}
+                     selectedUBS={ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id))}
+                     optimizedRoute={optimizationResult?.route || null}
+                     activeDrivers={isAdmin && viewState === 'admin-monitor' ? activeDrivers : undefined}
+                 />
+            </ErrorBoundary>
         </div>
 
         {/* LOADING OVERLAY */}
