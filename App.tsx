@@ -162,8 +162,9 @@ export default function App() {
         if (data) {
           const driversList = Object.values(data) as ActiveDriver[];
           // Filtra quem não atualiza há mais de 24h para limpar o mapa visualmente
+          // E adiciona verificação de segurança para garantir que o objeto existe
           const oneDayAgo = Date.now() - 86400000;
-          setActiveDrivers(driversList.filter(d => d.updatedAt > oneDayAgo));
+          setActiveDrivers(driversList.filter(d => d && typeof d === 'object' && d.updatedAt > oneDayAgo));
         } else {
           setActiveDrivers([]);
         }
@@ -638,23 +639,27 @@ export default function App() {
                                  <p className="text-sm">Nenhum motorista conectado.</p>
                              </div>
                          ) : (
-                             activeDrivers.map(driver => (
-                                 <div key={driver.id} className={`bg-white p-3 rounded-lg border shadow-sm ${driver.status === 'online' ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-slate-300 opacity-70'}`}>
-                                     <div className="flex justify-between items-start">
-                                         <div>
-                                             <h3 className="font-bold text-[#002855]">{driver.name}</h3>
-                                             <p className="text-[10px] text-slate-400 uppercase tracking-wider">ID: {driver.id.substring(0,8)}</p>
+                             activeDrivers.map(driver => {
+                                 // Safety check inside map
+                                 if (!driver) return null;
+                                 return (
+                                     <div key={driver.id || Math.random()} className={`bg-white p-3 rounded-lg border shadow-sm ${driver.status === 'online' ? 'border-l-4 border-l-green-500' : 'border-l-4 border-l-slate-300 opacity-70'}`}>
+                                         <div className="flex justify-between items-start">
+                                             <div>
+                                                 <h3 className="font-bold text-[#002855]">{driver.name || 'Motorista'}</h3>
+                                                 <p className="text-[10px] text-slate-400 uppercase tracking-wider">ID: {String(driver.id || '').substring(0,8)}</p>
+                                             </div>
+                                             <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${driver.status === 'online' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                 {driver.status || 'Offline'}
+                                             </div>
                                          </div>
-                                         <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${driver.status === 'online' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
-                                             {driver.status}
+                                         <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
+                                             <span className="text-slate-500">Último sinal: {driver.updatedAt ? new Date(driver.updatedAt).toLocaleTimeString() : '--:--'}</span>
+                                             {driver.status === 'online' && <MapPin className="h-3 w-3 text-red-500" />}
                                          </div>
                                      </div>
-                                     <div className="mt-2 pt-2 border-t border-slate-100 flex justify-between items-center text-xs">
-                                         <span className="text-slate-500">Último sinal: {new Date(driver.updatedAt).toLocaleTimeString()}</span>
-                                         {driver.status === 'online' && <MapPin className="h-3 w-3 text-red-500" />}
-                                     </div>
-                                 </div>
-                             ))
+                                 );
+                             })
                          )}
                      </div>
                 </div>
