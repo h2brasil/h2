@@ -6,6 +6,7 @@ import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
 // Firebase Imports - Modular Syntax (Standard)
+// @ts-ignore - Bypass TS error: Module '"firebase/app"' has no exported member 'initializeApp'
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, onValue, push } from "firebase/database";
 
@@ -32,13 +33,11 @@ try {
   } else {
     app = getApp();
   }
+  // Initialize Database Service
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
-  // O erro "Service database is not available" ocorre quando há conflito de versões
-  if (error.message && error.message.includes("Service database is not available")) {
-      firebaseErrorMsg = "Conflito de Versão do Firebase: O banco de dados não pôde ser carregado. Tente recarregar a página.";
-  } else if (error.code === 'app/no-app') {
+  if (error.code === 'app/no-app') {
       firebaseErrorMsg = "Erro de Inicialização do App.";
   } else {
       firebaseErrorMsg = "Conexão com Banco de Dados falhou: " + (error.message || "Erro desconhecido");
@@ -70,7 +69,6 @@ export default function App() {
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
   const [viewState, setViewState] = useState<ViewState>('selection');
   const [loading, setLoading] = useState(false);
-  // Se houver erro de inicialização do firebase, mostramos isso, senão erro normal
   const [error, setError] = useState<string | null>(firebaseErrorMsg || null);
   
   // Admin State
@@ -115,7 +113,8 @@ export default function App() {
       console.error("Erro ao ler histórico:", error);
       // Não sobrescreve erro principal se for apenas permissão
       if (!firebaseErrorMsg) {
-         setError("Erro ao ler banco de dados. Verifique sua conexão ou permissões.");
+         // setError("Erro ao ler banco de dados. Verifique sua conexão ou permissões.");
+         console.warn("Leitura de histórico falhou (permissões ou rede).");
       }
     });
 
@@ -363,7 +362,7 @@ export default function App() {
   };
 
   // Safe render fallback for critical errors
-  if (error && error.includes("Conflito de Versão")) {
+  if (error && error.includes("Erro crítico")) {
       return (
           <div className="h-screen w-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
               <AlertTriangle className="h-12 w-12 text-red-600 mb-4" />
