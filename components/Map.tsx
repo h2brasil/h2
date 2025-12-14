@@ -69,8 +69,14 @@ const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimi
   // Determine center priority: First driver -> Current Loc -> Default
   let center: [number, number] = [-26.9046, -48.6612];
   
-  if (activeDrivers && activeDrivers.length > 0) {
-      center = [activeDrivers[0].lat, activeDrivers[0].lng];
+  // Safe filtering of valid drivers to prevent crash
+  const validDrivers = activeDrivers?.filter(d => 
+    typeof d.lat === 'number' && !isNaN(d.lat) && 
+    typeof d.lng === 'number' && !isNaN(d.lng)
+  ) || [];
+
+  if (validDrivers.length > 0) {
+      center = [validDrivers[0].lat, validDrivers[0].lng];
   } else if (currentLocation) {
       center = [currentLocation.lat, currentLocation.lng];
   }
@@ -78,9 +84,7 @@ const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimi
   const pointsToFit: Coordinates[] = [];
   if (currentLocation) pointsToFit.push(currentLocation);
   
-  if (activeDrivers) {
-      activeDrivers.forEach(d => pointsToFit.push({ lat: d.lat, lng: d.lng }));
-  }
+  validDrivers.forEach(d => pointsToFit.push({ lat: d.lat, lng: d.lng }));
   
   if (optimizedRoute) {
     optimizedRoute.forEach(s => pointsToFit.push(s.coords));
@@ -103,7 +107,7 @@ const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimi
       )}
 
       {/* Admin View: Multiple Drivers */}
-      {activeDrivers && activeDrivers.map((driver) => (
+      {validDrivers.map((driver) => (
         <Marker 
             key={driver.id}
             position={[driver.lat, driver.lng]} 

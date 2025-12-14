@@ -470,14 +470,13 @@ export default function App() {
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
         
         {/* SIDEBAR / PAINEL INFERIOR (Mobile) */}
-        {/* Lógica de CSS Complexa para resolver o bug do Mobile Admin */}
         <div className={`
           z-20 bg-white shadow-xl transition-all duration-300 flex flex-col
           
           ${/* Mobile Styles */ ""}
           ${isAdmin && viewState === 'admin-monitor' 
-             ? 'absolute bottom-0 w-full h-[50vh] rounded-t-2xl border-t border-slate-300' // Admin Mobile: Half Screen List (Fix White Screen)
-             : 'absolute bottom-0 w-full h-[60vh] rounded-t-2xl' // Driver Mobile: Bottom Sheet
+             ? 'absolute bottom-0 w-full h-[40vh] rounded-t-2xl border-t border-slate-300' // Admin Mobile: 40% height
+             : 'absolute bottom-0 w-full h-[60vh] rounded-t-2xl' // Driver Mobile: 60% height
            }
 
           ${/* Desktop Styles */ ""}
@@ -664,8 +663,8 @@ export default function App() {
             </div>
         </div>
 
-        {/* MAP AREA */}
-        <div className={`flex-1 relative z-0 transition-all duration-300 ${viewState === 'admin-monitor' ? 'h-[50vh] md:h-full order-first md:order-last' : 'h-[40vh] md:h-full'}`}>
+        {/* MAP AREA - ALWAYS VISIBLE, FILLS SPACE */}
+        <div className="flex-1 relative z-0 h-full w-full">
              <MapComponent 
                  currentLocation={currentLocation}
                  selectedUBS={ITAJAI_UBS_LIST.filter(u => selectedUBS.includes(u.id))}
