@@ -1,15 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Coordinates, UBS, OptimizationResult, OptimizedStop } from "../types";
 
-const apiKey = process.env.API_KEY;
-
 export const optimizeRoute = async (
   startLocation: Coordinates,
   selectedUBS: UBS[]
 ): Promise<OptimizationResult> => {
-  if (!apiKey) {
-    throw new Error("Chave de API não configurada. Verifique o console.");
-  }
+  // Chave de API inserida diretamente conforme solicitado
+  const apiKey = "AIzaSyC2ksk0GOr8UVeIywasQNZ1tD8YCyMBM1w";
 
   const ai = new GoogleGenAI({ apiKey });
 

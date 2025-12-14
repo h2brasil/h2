@@ -5,20 +5,21 @@ import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem } 
 import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
-// Firebase Imports - Modular Syntax (Standard)
-// @ts-ignore - Bypass TS error: Module '"firebase/app"' has no exported member 'initializeApp'
+// Firebase Imports - Modular Syntax (Correct for v10+ via esm.sh)
+// @ts-ignore
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase, ref, set, onValue, push } from "firebase/database";
 
-// Configuração do Firebase fornecida pelo usuário
+// --- CONFIGURAÇÃO DO FIREBASE (H2 BRASIL LOGÍSTICA) ---
 const firebaseConfig = {
-  apiKey: "AIzaSyCuPiygb1O_hQaYT5LK7d6c0t_4_EyIz6s",
-  authDomain: "h2brasil-20834.firebaseapp.com",
-  databaseURL: "https://h2brasil-20834-default-rtdb.firebaseio.com",
-  projectId: "h2brasil-20834",
-  storageBucket: "h2brasil-20834.firebasestorage.app",
-  messagingSenderId: "344038367500",
-  appId: "1:344038367500:web:77a23899f7644bf671e929"
+  apiKey: "AIzaSyC9sZkmfI_F32inTsH5nPloQu_PYD4Ix3A",
+  authDomain: "h2brasil-logistica.firebaseapp.com",
+  databaseURL: "https://h2brasil-logistica-default-rtdb.firebaseio.com",
+  projectId: "h2brasil-logistica",
+  storageBucket: "h2brasil-logistica.firebasestorage.app",
+  messagingSenderId: "4439234426",
+  appId: "1:4439234426:web:f27b403dd49bee7a3828c3",
+  measurementId: "G-6M2EGP7TDD"
 };
 
 // Inicializa o Firebase com tratamento de erro robusto
@@ -27,13 +28,13 @@ let db: any = null;
 let firebaseErrorMsg = "";
 
 try {
-  // Check if any app is already initialized to prevent hot-reload errors
+  // Garante que só inicializa uma vez para evitar erro de hot-reload
   if (getApps().length === 0) {
     app = initializeApp(firebaseConfig);
   } else {
     app = getApp();
   }
-  // Initialize Database Service
+  // Inicializa o serviço de banco de dados
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
@@ -92,10 +93,10 @@ export default function App() {
   useEffect(() => {
     if (!db) return;
 
-    // Escuta mudanças na pasta 'history' do banco de dados
+    // Referência modular
     const historyRef = ref(db, 'history');
     
-    // onValue é a forma modular de ler dados
+    // onValue modular
     const unsubscribe = onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -111,9 +112,7 @@ export default function App() {
       }
     }, (error) => {
       console.error("Erro ao ler histórico:", error);
-      // Não sobrescreve erro principal se for apenas permissão
       if (!firebaseErrorMsg) {
-         // setError("Erro ao ler banco de dados. Verifique sua conexão ou permissões.");
          console.warn("Leitura de histórico falhou (permissões ou rede).");
       }
     });
@@ -131,7 +130,6 @@ export default function App() {
       let watchId: number;
 
       // Se NÃO for admin, é o entregador. Vamos monitorar a posição dele.
-      // Importante: verificar se db existe antes de tentar escrever
       if (!isAdmin && navigator.geolocation) {
           watchId = navigator.geolocation.watchPosition(
               (position) => {
@@ -142,7 +140,7 @@ export default function App() {
                   setCurrentLocation(newLocation);
                   setLocationStatus('found');
 
-                  // *** ENVIA PARA FIREBASE ***
+                  // *** ENVIA PARA FIREBASE (MODULAR) ***
                   if (db) {
                     set(ref(db, 'drivers/current'), { 
                       lat: latitude, 
@@ -306,7 +304,7 @@ export default function App() {
 
     setOptimizationResult({ ...optimizationResult, route: updatedRoute });
 
-    // 2. Salva no Banco de Dados (Firebase)
+    // 2. Salva no Banco de Dados (Firebase Modular)
     const stopDetails = optimizationResult.route.find(s => s.id === stopId);
     if (stopDetails && db) {
         const newHistoryItem: DeliveryHistoryItem = {
@@ -318,8 +316,7 @@ export default function App() {
             notes: noteText
         };
 
-        // Cria uma nova entrada na lista 'history'
-        // push() gera uma chave única
+        // push() modular
         const newListRef = push(ref(db, 'history'));
         set(newListRef, newHistoryItem)
           .catch((err) => {
