@@ -36,7 +36,7 @@ try {
   if (error.message.includes("Service database is not available")) {
       firebaseErrorMsg = "Erro de Versão: Limpe o cache do navegador e recarregue.";
   } else {
-      firebaseErrorMsg = "Conexão com Banco de Dados falhou.";
+      firebaseErrorMsg = "Conexão com Banco de Dados falhou: " + error.message;
   }
 }
 
@@ -108,6 +108,10 @@ export default function App() {
       }
     }, (error) => {
       console.error("Erro ao ler histórico:", error);
+      // Se houver erro de permissão ou chave, mostra na tela
+      if (error.message.includes("permission_denied") || error.message.includes("API key not valid")) {
+        setError("Erro de acesso ao Banco de Dados: Verifique a API Key.");
+      }
     });
 
     return () => unsubscribe();
@@ -141,6 +145,7 @@ export default function App() {
                     updatedAt: Date.now()
                   }).catch(err => {
                       console.error("Erro ao enviar localização:", err);
+                      // Não mostra erro na UI aqui para não spamar o motorista, só console
                   });
               },
               (err) => {
@@ -180,6 +185,9 @@ export default function App() {
                   setAdminTrackingLocation({ lat: data.lat, lng: data.lng });
                   setLastUpdate(data.updatedAt);
               }
+          }, (error) => {
+              console.error("Erro monitoramento:", error);
+              setError("Erro de acesso ao monitoramento.");
           });
 
           return () => unsubscribe();
@@ -320,7 +328,7 @@ export default function App() {
         set(newListRef, newHistoryItem)
           .catch((err) => {
             console.error("Erro ao salvar histórico:", err);
-            setError("Erro ao salvar no banco de dados. Verifique a internet.");
+            setError("Erro ao salvar no banco de dados. Verifique a internet e a API Key.");
           });
     } else if (!db) {
         setError("Banco de dados desconectado. Histórico não salvo.");
