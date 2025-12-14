@@ -5,24 +5,9 @@ import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem } 
 import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
-// Firebase Imports - Adapter for compatibility with environments where modular imports fail
-import firebase from "firebase/app";
-import "firebase/database";
-
-// Adapter functions to mimic Modular SDK (v9) using Namespaced SDK (v8)
-// This fixes the "has no exported member 'initializeApp'" error when types mismatch
-const initializeApp = (config: any) => {
-  if (!firebase.apps.length) return firebase.initializeApp(config);
-  return firebase.app();
-};
-const getDatabase = (app?: any) => firebase.database();
-const ref = (db: any, path: string) => db.ref(path);
-const set = (ref: any, val: any) => ref.set(val);
-const push = (ref: any) => ref.push();
-const onValue = (ref: any, cb: (snap: any) => void, errCb?: (err: any) => void) => {
-  ref.on('value', cb, errCb);
-  return () => ref.off('value', cb);
-};
+// Firebase Imports - Modular Syntax (Standard)
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getDatabase, ref, set, onValue, push } from "firebase/database";
 
 // Configuração do Firebase fornecida pelo usuário
 const firebaseConfig = {
@@ -41,7 +26,12 @@ let db: any = null;
 let firebaseErrorMsg = "";
 
 try {
-  app = initializeApp(firebaseConfig);
+  // Check if any app is already initialized to prevent hot-reload errors
+  if (getApps().length === 0) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    app = getApp();
+  }
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
@@ -333,7 +323,7 @@ export default function App() {
         // push() gera uma chave única
         const newListRef = push(ref(db, 'history'));
         set(newListRef, newHistoryItem)
-          .catch((err: any) => {
+          .catch((err) => {
             console.error("Erro ao salvar histórico:", err);
             setError("Erro ao salvar no banco de dados. Verifique a internet.");
           });
@@ -371,6 +361,20 @@ export default function App() {
       if (seconds < 60) return 'Atualizado agora mesmo';
       return `Atualizado há ${Math.floor(seconds/60)} min`;
   };
+
+  // Safe render fallback for critical errors
+  if (error && error.includes("Conflito de Versão")) {
+      return (
+          <div className="h-screen w-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
+              <AlertTriangle className="h-12 w-12 text-red-600 mb-4" />
+              <h1 className="text-xl font-bold text-red-800">Erro de Inicialização</h1>
+              <p className="text-red-600 mt-2">{error}</p>
+              <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-red-600 text-white rounded shadow">
+                  Recarregar Aplicação
+              </button>
+          </div>
+      )
+  }
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
