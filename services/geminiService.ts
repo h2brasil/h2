@@ -8,7 +8,7 @@ export const optimizeRoute = async (
   selectedUBS: UBS[]
 ): Promise<OptimizationResult> => {
   if (!apiKey) {
-    throw new Error("API Key not found");
+    throw new Error("Chave de API não configurada. Verifique o console.");
   }
 
   const ai = new GoogleGenAI({ apiKey });
@@ -75,33 +75,47 @@ export const optimizeRoute = async (
       },
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
+    let text = response.text;
+    if (!text) throw new Error("A IA não retornou dados.");
+
+    // Remove markdown code blocks if present (common issue causing parse errors)
+    text = text.trim();
+    if (text.startsWith('```')) {
+        text = text.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+    }
 
     const data = JSON.parse(text);
     
     // Map the IDs back to the full UBS objects
     const orderedStops: OptimizedStop[] = [];
     
-    data.orderedIds.forEach((id: string, index: number) => {
-      const ubs = selectedUBS.find(u => u.id === id);
-      if (ubs) {
-        orderedStops.push({
-          ...ubs,
-          sequence: index + 1,
-          status: 'pending',
+    if (data.orderedIds && Array.isArray(data.orderedIds)) {
+        data.orderedIds.forEach((id: string, index: number) => {
+          const ubs = selectedUBS.find(u => u.id === id);
+          if (ubs) {
+            orderedStops.push({
+              ...ubs,
+              sequence: index + 1,
+              status: 'pending',
+            });
+          }
         });
-      }
-    });
+    }
+
+    if (orderedStops.length === 0) {
+        // Fallback simple distance sort if AI returns weird IDs
+        throw new Error("Falha ao processar a ordem da rota.");
+    }
 
     return {
       route: orderedStops,
-      summary: data.summary,
-      totalDistanceEst: data.totalDistanceEst,
+      summary: data.summary || "Rota calculada com base na proximidade.",
+      totalDistanceEst: data.totalDistanceEst || "--",
     };
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error optimizing route:", error);
-    throw error;
+    // Propagate the specific error message
+    throw new Error(error.message || "Erro desconhecido na API de IA");
   }
 };

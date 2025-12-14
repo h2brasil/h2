@@ -7,7 +7,7 @@ import { optimizeRoute } from './services/geminiService';
 
 // Firebase Imports
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, set, onValue } from "firebase/database";
+import { getDatabase, ref, set, onValue, push } from "firebase/database";
 
 // Configuração do Firebase fornecida pelo usuário
 const firebaseConfig = {
@@ -21,15 +21,23 @@ const firebaseConfig = {
   appId: "1:344038367500:web:77a23899f7644bf671e929"
 };
 
-// Inicializa o Firebase com tratamento de erro para evitar tela branca
+// Inicializa o Firebase com tratamento de erro
 let app;
 let db: any = null;
+let firebaseErrorMsg = "";
 
 try {
   app = initializeApp(firebaseConfig);
+  // Tenta obter a instância do banco de dados
   db = getDatabase(app);
-} catch (error) {
-  console.error("Erro ao inicializar Firebase:", error);
+} catch (error: any) {
+  console.error("Erro crítico ao inicializar Firebase:", error);
+  // Traduz mensagem comum de erro de versão
+  if (error.message.includes("Service database is not available")) {
+      firebaseErrorMsg = "Erro de Versão: Limpe o cache do navegador e recarregue.";
+  } else {
+      firebaseErrorMsg = "Conexão com Banco de Dados falhou.";
+  }
 }
 
 // Logo Component replicating H2 Brasil Brand
@@ -57,7 +65,7 @@ export default function App() {
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null);
   const [viewState, setViewState] = useState<ViewState>('selection');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(firebaseErrorMsg || null);
   
   // Admin State
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -76,13 +84,38 @@ export default function App() {
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; stopId: string | null }>({ isOpen: false, stopId: null });
   const [noteText, setNoteText] = useState('');
 
-  // Load history from localStorage on mount
+  // --- LÓGICA DE HISTÓRICO NO BANCO DE DADOS ---
+  // Substitui o localStorage pelo Firebase
   useEffect(() => {
-    const savedHistory = localStorage.getItem('h2_delivery_history');
-    if (savedHistory) {
-        setHistory(JSON.parse(savedHistory));
-    }
-    getLocation();
+    if (!db) return;
+
+    // Escuta mudanças na pasta 'history' do banco de dados
+    const historyRef = ref(db, 'history');
+    
+    const unsubscribe = onValue(historyRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        // O Firebase retorna um Objeto { id1: dados, id2: dados }, transformamos em Array
+        const historyArray = Object.values(data) as DeliveryHistoryItem[];
+        // Ordena do mais recente para o mais antigo
+        const sortedHistory = historyArray.sort((a, b) => {
+           // Fallback simples para ordenação se não tiver timestamp numérico, usando string ISO/Time
+           return (b.date + b.completedAt).localeCompare(a.date + a.completedAt);
+        });
+        setHistory(sortedHistory);
+      } else {
+        setHistory([]);
+      }
+    }, (error) => {
+      console.error("Erro ao ler histórico:", error);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Inicializa GPS
+  useEffect(() => {
+      getLocation();
   }, []);
 
   // --- LOGICA DE RASTREAMENTO (LADO DO ENTREGADOR) ---
@@ -90,7 +123,7 @@ export default function App() {
       let watchId: number;
 
       // Se NÃO for admin, é o entregador. Vamos monitorar a posição dele.
-      // Adicionada verificação '&& db' para não quebrar se o Firebase falhar
+      // Se db for nulo, não tenta usar para evitar crash
       if (!isAdmin && navigator.geolocation && db) {
           watchId = navigator.geolocation.watchPosition(
               (position) => {
@@ -102,7 +135,6 @@ export default function App() {
                   setLocationStatus('found');
 
                   // *** ENVIA PARA FIREBASE ***
-                  // Usamos 'drivers/current' para simplificar (assumindo 1 motorista ativo por vez ou compartilhado)
                   set(ref(db, 'drivers/current'), { 
                     lat: latitude, 
                     lng: longitude,
@@ -118,7 +150,17 @@ export default function App() {
               { enableHighAccuracy: true }
           );
       } else if (!db) {
-        console.warn("Firebase não inicializado, rastreamento desativado.");
+        // Se o banco falhar, não crasha, apenas avisa no console
+        console.warn("Firebase DB indisponível. Rastreamento apenas local.");
+        // Ainda tenta pegar localização localmente para roteirização funcionar
+        if (navigator.geolocation) {
+             watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    setCurrentLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
+                    setLocationStatus('found');
+                }
+             );
+        }
       }
 
       return () => {
@@ -157,6 +199,7 @@ export default function App() {
         },
         (err) => {
           console.error(err);
+          // Fallback para centro de Itajaí se GPS falhar
           setCurrentLocation({ lat: -26.9046, lng: -48.6612 });
           setLocationStatus('error');
         },
@@ -221,8 +264,10 @@ export default function App() {
       const result = await optimizeRoute(currentLocation, selectedData);
       setOptimizationResult(result);
       setViewState('result');
-    } catch (e) {
-      setError("Falha ao calcular logística. Verifique conexão.");
+    } catch (e: any) {
+      console.error(e);
+      // Mostra a mensagem real do erro para o usuário (ex: "Chave de API não configurada")
+      setError(e.message || "Falha ao calcular logística. Verifique conexão.");
       setViewState('selection');
     } finally {
       setLoading(false);
@@ -242,7 +287,7 @@ export default function App() {
     const timestamp = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const dateKey = now.toISOString().split('T')[0];
 
-    // 1. Update Current Route State
+    // 1. Atualiza a rota atual visualmente (memória local apenas para UI da rota)
     const updatedRoute = optimizationResult.route.map(stop => {
         if (stop.id === stopId) {
             return { 
@@ -257,9 +302,10 @@ export default function App() {
 
     setOptimizationResult({ ...optimizationResult, route: updatedRoute });
 
-    // 2. Add to History
+    // 2. Salva no Banco de Dados (Firebase)
+    // Isso disparará o listener do useEffect 'history' e atualizará a lista automaticamente
     const stopDetails = optimizationResult.route.find(s => s.id === stopId);
-    if (stopDetails) {
+    if (stopDetails && db) {
         const newHistoryItem: DeliveryHistoryItem = {
             id: stopId + '-' + now.getTime(), // unique id
             stopName: stopDetails.name,
@@ -269,9 +315,15 @@ export default function App() {
             notes: noteText
         };
 
-        const updatedHistory = [newHistoryItem, ...history];
-        setHistory(updatedHistory);
-        localStorage.setItem('h2_delivery_history', JSON.stringify(updatedHistory));
+        // Cria uma nova entrada na lista 'history'
+        const newListRef = push(ref(db, 'history'));
+        set(newListRef, newHistoryItem)
+          .catch((err) => {
+            console.error("Erro ao salvar histórico:", err);
+            setError("Erro ao salvar no banco de dados. Verifique a internet.");
+          });
+    } else if (!db) {
+        setError("Banco de dados desconectado. Histórico não salvo.");
     }
     
     // Close Modal
