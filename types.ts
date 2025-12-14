@@ -33,4 +33,12 @@ export interface DeliveryHistoryItem {
   notes?: string;
 }
 
+export interface ActiveDriver {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  updatedAt: number;
+}
+
 export type ViewState = 'selection' | 'optimizing' | 'result' | 'history' | 'admin-monitor';

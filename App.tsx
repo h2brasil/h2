@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi, Map as MapIcon } from 'lucide-react';
+import { CheckCircle2, Navigation, Loader2, RotateCcw, Crosshair, MapPin, Package, Calendar, Clock, History, CheckSquare, X, MessageSquare, Lock, User, LogOut, Truck, AlertTriangle, Wifi, Map as MapIcon, Settings, UserCircle } from 'lucide-react';
 import { ITAJAI_UBS_LIST } from './constants';
-import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem } from './types';
+import { UBS, Coordinates, OptimizationResult, ViewState, DeliveryHistoryItem, ActiveDriver } from './types';
 import MapComponent from './components/Map';
 import { optimizeRoute } from './services/geminiService';
 
 // Firebase Imports - Modular Syntax (Correct for v10+ via esm.sh)
 // @ts-ignore
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getDatabase, ref, set, onValue, push } from "firebase/database";
+import { getDatabase, ref, set, onValue, push, onDisconnect, remove } from "firebase/database";
 
 // --- CONFIGURAÇÃO DO FIREBASE (H2 BRASIL LOGÍSTICA) ---
 const firebaseConfig = {
@@ -28,13 +28,11 @@ let db: any = null;
 let firebaseErrorMsg = "";
 
 try {
-  // Garante que só inicializa uma vez para evitar erro de hot-reload
   if (getApps().length === 0) {
     app = initializeApp(firebaseConfig);
   } else {
     app = getApp();
   }
-  // Inicializa o serviço de banco de dados
   db = getDatabase(app);
 } catch (error: any) {
   console.error("Erro crítico ao inicializar Firebase:", error);
@@ -45,18 +43,29 @@ try {
   }
 }
 
-// Logo Component replicating H2 Brasil Brand
+// Helper para ID persistente do motorista
+const getDriverId = () => {
+    let id = localStorage.getItem('h2_driver_id');
+    if (!id) {
+        // Gera um ID curto aleatório
+        id = 'driver_' + Math.random().toString(36).substr(2, 6).toUpperCase();
+        localStorage.setItem('h2_driver_id', id);
+    }
+    return id;
+};
+
+// Helper para Nome persistente
+const getStoredDriverName = () => {
+    return localStorage.getItem('h2_driver_name') || '';
+}
+
+// Logo Component
 const H2Logo = () => (
   <svg viewBox="0 0 100 100" className="h-12 w-12 mr-3 drop-shadow-sm" fill="none" xmlns="http://www.w3.org/2000/svg">
-    {/* Drop Shape Background */}
     <path d="M50 5 C50 5 10 45 10 65 C10 87 28 100 50 100 C72 100 90 87 90 65 C90 45 50 5 50 5Z" fill="white"/>
-    {/* Green part */}
     <path d="M50 5 C50 5 15 42 12 60 C12 60 20 80 50 80 C40 60 50 5 50 5Z" fill="#166534" /> 
-    {/* Yellow part */}
     <path d="M50 100 C72 100 90 87 90 65 C90 50 70 25 50 5 C55 30 60 60 30 85 C35 95 42 100 50 100Z" fill="#EAB308" />
-    {/* Blue Circle/Drop inside */}
     <circle cx="50" cy="65" r="18" fill="#003366" />
-    {/* Water drops inside blue */}
     <path d="M50 55 L53 60 H47 Z" fill="white" />
     <path d="M45 65 L48 70 H42 Z" fill="white" />
     <path d="M55 65 L58 70 H52 Z" fill="white" />
@@ -72,14 +81,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(firebaseErrorMsg || null);
   
+  // Driver Identity State
+  const [driverId] = useState(getDriverId());
+  const [driverName, setDriverName] = useState(getStoredDriverName());
+  const [isDriverNameEditing, setIsDriverNameEditing] = useState(false);
+
   // Admin State
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [adminTrackingLocation, setAdminTrackingLocation] = useState<Coordinates | null>(null);
-  const [lastUpdate, setLastUpdate] = useState<number | null>(null);
+  // Lista de motoristas ativos
+  const [activeDrivers, setActiveDrivers] = useState<ActiveDriver[]>([]);
 
   // History State
   const [history, setHistory] = useState<DeliveryHistoryItem[]>([]);
@@ -92,17 +106,11 @@ export default function App() {
   // --- LÓGICA DE HISTÓRICO NO BANCO DE DADOS ---
   useEffect(() => {
     if (!db) return;
-
-    // Referência modular
     const historyRef = ref(db, 'history');
-    
-    // onValue modular
     const unsubscribe = onValue(historyRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        // O Firebase retorna um Objeto { id1: dados, id2: dados }, transformamos em Array
         const historyArray = Object.values(data) as DeliveryHistoryItem[];
-        // Ordena do mais recente para o mais antigo
         const sortedHistory = historyArray.sort((a, b) => {
            return (b.date + b.completedAt).localeCompare(a.date + a.completedAt);
         });
@@ -110,13 +118,7 @@ export default function App() {
       } else {
         setHistory([]);
       }
-    }, (error) => {
-      console.error("Erro ao ler histórico:", error);
-      if (!firebaseErrorMsg) {
-         console.warn("Leitura de histórico falhou (permissões ou rede).");
-      }
     });
-
     return () => unsubscribe();
   }, []);
 
@@ -125,24 +127,30 @@ export default function App() {
       getLocation();
   }, []);
 
-  // --- LOGICA DE RASTREAMENTO (LADO DO ENTREGADOR) ---
+  // --- LOGICA DE RASTREAMENTO MULTI-MOTORISTA (LADO DO ENTREGADOR) ---
   useEffect(() => {
       let watchId: number;
 
-      // Se NÃO for admin, é o entregador. Vamos monitorar a posição dele.
       if (!isAdmin && navigator.geolocation) {
           watchId = navigator.geolocation.watchPosition(
               (position) => {
                   const { latitude, longitude } = position.coords;
                   const newLocation = { lat: latitude, lng: longitude };
                   
-                  // Atualiza local no app do entregador
                   setCurrentLocation(newLocation);
                   setLocationStatus('found');
 
-                  // *** ENVIA PARA FIREBASE (MODULAR) ***
+                  // *** ENVIA PARA FIREBASE USANDO ID ÚNICO ***
                   if (db) {
-                    set(ref(db, 'drivers/current'), { 
+                    const driverRef = ref(db, `drivers/${driverId}`);
+                    
+                    // Configura para apagar se perder conexão
+                    onDisconnect(driverRef).remove();
+
+                    // Atualiza dados
+                    set(driverRef, { 
+                      id: driverId,
+                      name: driverName || `Motorista ${driverId.slice(-4)}`,
                       lat: latitude, 
                       lng: longitude,
                       updatedAt: Date.now()
@@ -157,30 +165,44 @@ export default function App() {
               },
               { enableHighAccuracy: true }
           );
-      } 
+      } else if (isAdmin && db) {
+          // Se virar admin, remove registro de motorista deste dispositivo
+          remove(ref(db, `drivers/${driverId}`));
+      }
 
       return () => {
           if (watchId) navigator.geolocation.clearWatch(watchId);
       };
-  }, [isAdmin]);
+  }, [isAdmin, driverName, driverId]); // Re-run se mudar nome ou status
 
-  // --- LOGICA DE MONITORAMENTO (LADO DO ADMIN) ---
+  // --- LOGICA DE MONITORAMENTO MULTIPLO (LADO DO ADMIN) ---
   useEffect(() => {
-      // Se for admin e estiver na tela de monitoramento, escuta o Firebase
       if (isAdmin && viewState === 'admin-monitor' && db) {
-          const driverRef = ref(db, 'drivers/current');
+          const driversListRef = ref(db, 'drivers');
           
-          const unsubscribe = onValue(driverRef, (snapshot) => {
+          const unsubscribe = onValue(driversListRef, (snapshot) => {
               const data = snapshot.val();
-              if (data && data.lat && data.lng) {
-                  setAdminTrackingLocation({ lat: data.lat, lng: data.lng });
-                  setLastUpdate(data.updatedAt);
+              if (data) {
+                  // Converte objeto { id1: {...}, id2: {...} } em array
+                  const driversArray = Object.values(data) as ActiveDriver[];
+                  // Filtra motoristas muito antigos (ex: > 1 hora sem update) para evitar fantasmas se o onDisconnect falhar
+                  const now = Date.now();
+                  const freshDrivers = driversArray.filter(d => (now - d.updatedAt) < 3600000); 
+                  setActiveDrivers(freshDrivers);
+              } else {
+                  setActiveDrivers([]);
               }
           });
 
           return () => unsubscribe();
       }
   }, [isAdmin, viewState]);
+
+  // Salvar nome do motorista
+  const saveDriverName = () => {
+      localStorage.setItem('h2_driver_name', driverName);
+      setIsDriverNameEditing(false);
+  };
 
   const getLocation = () => {
     setLocationStatus('locating');
@@ -195,7 +217,6 @@ export default function App() {
         },
         (err) => {
           console.error(err);
-          // Fallback para centro de Itajaí se GPS falhar
           setCurrentLocation({ lat: -26.9046, lng: -48.6612 });
           setLocationStatus('error');
         },
@@ -223,7 +244,7 @@ export default function App() {
       setUsername('');
       setPassword('');
       setViewState('selection');
-      setAdminTrackingLocation(null);
+      setActiveDrivers([]);
   };
 
   const toggleUBS = (id: string) => {
@@ -263,12 +284,9 @@ export default function App() {
     } catch (e: any) {
       console.error("Erro na Otimização:", e);
       let msg = e.message || "Falha ao calcular logística.";
-      
-      // Detecção específica do erro de API Key da IA
       if (JSON.stringify(e).includes("API key not valid") || msg.includes("API key not valid")) {
-          msg = "ERRO NA IA: A chave de API do Gemini (IA) é inválida. Verifique o arquivo .env ou a configuração.";
+          msg = "ERRO NA IA: A chave de API do Gemini (IA) é inválida.";
       }
-      
       setError(msg);
       setViewState('selection');
     } finally {
@@ -276,37 +294,24 @@ export default function App() {
     }
   };
 
-  // --- NOVA FUNÇÃO: NAVEGAR ROTA COMPLETA ---
   const handleNavigateAll = () => {
     if (!currentLocation || !optimizationResult) return;
-
-    // Filtra apenas as entregas que NÃO foram concluídas
     const pendingStops = optimizationResult.route.filter(s => s.status !== 'completed');
-    
     if (pendingStops.length === 0) {
         alert("Todas as entregas foram concluídas!");
         return;
     }
-
-    // Origem: Onde o motorista está agora
     const origin = `${currentLocation.lat},${currentLocation.lng}`;
-    
-    // Destino: A última parada da lista
     const lastStop = pendingStops[pendingStops.length - 1];
     const destination = `${lastStop.coords.lat},${lastStop.coords.lng}`;
-    
-    // Waypoints: Todas as paradas ENTRE a origem e o destino final
-    // O Google Maps aceita paradas separadas por pipe '|'
     const waypoints = pendingStops.slice(0, pendingStops.length - 1)
         .map(s => `${s.coords.lat},${s.coords.lng}`)
         .join('|');
 
-    // Constrói URL
     let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}`;
     if (waypoints) {
         url += `&waypoints=${waypoints}`;
     }
-    
     window.open(url, '_blank');
   };
 
@@ -323,7 +328,6 @@ export default function App() {
     const timestamp = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const dateKey = now.toISOString().split('T')[0];
 
-    // 1. Atualiza a rota atual visualmente (memória local apenas para UI da rota)
     const updatedRoute = optimizationResult.route.map(stop => {
         if (stop.id === stopId) {
             return { 
@@ -338,30 +342,19 @@ export default function App() {
 
     setOptimizationResult({ ...optimizationResult, route: updatedRoute });
 
-    // 2. Salva no Banco de Dados (Firebase Modular)
     const stopDetails = optimizationResult.route.find(s => s.id === stopId);
     if (stopDetails && db) {
         const newHistoryItem: DeliveryHistoryItem = {
-            id: stopId + '-' + now.getTime(), // unique id
+            id: stopId + '-' + now.getTime(), 
             stopName: stopDetails.name,
             address: stopDetails.address,
             completedAt: timestamp,
             date: dateKey,
             notes: noteText
         };
-
-        // push() modular
         const newListRef = push(ref(db, 'history'));
-        set(newListRef, newHistoryItem)
-          .catch((err) => {
-            console.error("Erro ao salvar histórico:", err);
-            setError("Erro ao salvar no banco de dados. Verifique a internet.");
-          });
-    } else if (!db) {
-        setError("Banco de dados desconectado. Histórico salvo apenas localmente (será perdido ao recarregar).");
+        set(newListRef, newHistoryItem).catch((err) => console.error(err));
     }
-    
-    // Close Modal
     setConfirmModal({ isOpen: false, stopId: null });
   };
 
@@ -371,9 +364,7 @@ export default function App() {
   };
 
   const toggleHistory = () => {
-    if (isAdmin) {
-        return; 
-    }
+    if (isAdmin) return; 
     if (viewState === 'history') {
         setViewState(optimizationResult ? 'result' : 'selection');
     } else {
@@ -385,14 +376,13 @@ export default function App() {
   const filteredHistory = history.filter(item => item.date === historyDateFilter);
 
   // Formata o tempo desde a última atualização
-  const getLastUpdateText = () => {
-      if (!lastUpdate) return 'Aguardando dados...';
-      const seconds = Math.floor((Date.now() - lastUpdate) / 1000);
-      if (seconds < 60) return 'Atualizado agora mesmo';
-      return `Atualizado há ${Math.floor(seconds/60)} min`;
+  const getTimeSinceUpdate = (timestamp: number) => {
+      const seconds = Math.floor((Date.now() - timestamp) / 1000);
+      if (seconds < 60) return 'Agora';
+      if (seconds < 3600) return `${Math.floor(seconds/60)} min atrás`;
+      return '> 1h';
   };
 
-  // Safe render fallback for critical errors
   if (error && error.includes("Erro crítico")) {
       return (
           <div className="h-screen w-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
@@ -408,7 +398,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
-      {/* Professional Header - Navy Blue */}
+      {/* Header */}
       <header className="bg-[#002855] text-white p-3 shadow-lg flex items-center justify-between z-20 border-b border-[#001f40]">
         <div className="flex items-center">
           <H2Logo />
@@ -423,17 +413,12 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-2 md:gap-3">
-            {/* Admin Controls */}
             {isAdmin ? (
                 <div className="flex items-center gap-2">
                     <span className="text-xs bg-yellow-500 text-[#002855] font-bold px-2 py-1 rounded hidden md:inline">
-                        Admin Logado
+                        Admin
                     </span>
-                    <button 
-                        onClick={logout}
-                        className="bg-red-600 hover:bg-red-700 p-2 rounded-lg text-white transition shadow-sm"
-                        title="Sair do Admin"
-                    >
+                    <button onClick={logout} className="bg-red-600 hover:bg-red-700 p-2 rounded-lg text-white transition shadow-sm">
                         <LogOut className="h-5 w-5" />
                     </button>
                 </div>
@@ -444,35 +429,20 @@ export default function App() {
                         {locationStatus === 'found' ? 'GPS ON' : 'GPS OFF'}
                     </div>
 
-                    <button 
-                        onClick={toggleHistory}
-                        className={`p-2 rounded-lg text-white transition border border-[#004080] shadow-sm flex items-center gap-2 ${viewState === 'history' ? 'bg-[#FBBF24] text-[#002855] font-bold' : 'bg-[#003366] hover:bg-[#004080]'}`}
-                        title="Histórico de Entregas"
-                    >
+                    <button onClick={toggleHistory} className={`p-2 rounded-lg text-white transition border border-[#004080] shadow-sm flex items-center gap-2 ${viewState === 'history' ? 'bg-[#FBBF24] text-[#002855] font-bold' : 'bg-[#003366] hover:bg-[#004080]'}`}>
                         <History className="h-5 w-5" />
                         <span className="hidden md:inline text-sm">Histórico</span>
                     </button>
 
-                    <button 
-                        onClick={getLocation}
-                        className="bg-[#003366] hover:bg-[#004080] p-2 rounded-lg text-white transition border border-[#004080] shadow-sm"
-                        title="Recalibrar GPS"
-                    >
+                    <button onClick={getLocation} className="bg-[#003366] hover:bg-[#004080] p-2 rounded-lg text-white transition border border-[#004080] shadow-sm">
                         <Crosshair className={`h-5 w-5 ${locationStatus === 'locating' ? 'animate-spin' : ''}`} />
                     </button>
                     
-                    <button 
-                        onClick={() => setShowLoginModal(true)}
-                        className="bg-[#001f33] hover:bg-[#001522] p-2 rounded-lg text-slate-400 hover:text-white transition border border-[#004080] shadow-sm"
-                        title="Acesso Administrativo"
-                    >
+                    <button onClick={() => setShowLoginModal(true)} className="bg-[#001f33] hover:bg-[#001522] p-2 rounded-lg text-slate-400 hover:text-white transition border border-[#004080] shadow-sm">
                         <Lock className="h-5 w-5" />
                     </button>
 
-                    <button 
-                        onClick={reset}
-                        className={`text-sm bg-[#FBBF24] hover:bg-[#f59e0b] text-[#002855] font-bold px-4 py-2 rounded-lg flex items-center gap-1 transition-all duration-300 shadow-md ${viewState === 'result' ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10 pointer-events-none hidden'}`}
-                    >
+                    <button onClick={reset} className={`text-sm bg-[#FBBF24] hover:bg-[#f59e0b] text-[#002855] font-bold px-4 py-2 rounded-lg flex items-center gap-1 transition-all duration-300 shadow-md ${viewState === 'result' ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-10 pointer-events-none hidden'}`}>
                         <RotateCcw className="h-4 w-4" /> <span className="hidden md:inline">Nova Rota</span>
                     </button>
                 </>
@@ -503,6 +473,35 @@ export default function App() {
                 transition-all duration-500 ease-in-out transform
                 ${viewState === 'selection' ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10 pointer-events-none'}
             `}>
+                 {/* Driver Identity Input */}
+                 <div className="px-5 py-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <UserCircle className="h-5 w-5 text-slate-500" />
+                        {isDriverNameEditing ? (
+                            <input 
+                                autoFocus
+                                type="text" 
+                                value={driverName}
+                                onChange={(e) => setDriverName(e.target.value)}
+                                onBlur={saveDriverName}
+                                onKeyDown={(e) => e.key === 'Enter' && saveDriverName()}
+                                placeholder="Seu Nome / Placa"
+                                className="text-sm bg-white border border-slate-300 rounded px-2 py-1 w-40 outline-none text-[#002855] font-bold"
+                            />
+                        ) : (
+                            <span 
+                                onClick={() => setIsDriverNameEditing(true)}
+                                className="text-sm font-bold text-[#002855] border-b border-dashed border-slate-400 cursor-pointer hover:text-[#FBBF24]"
+                            >
+                                {driverName || "Definir Nome/Placa"}
+                            </span>
+                        )}
+                    </div>
+                    <button onClick={() => setIsDriverNameEditing(!isDriverNameEditing)} className="text-slate-400 hover:text-[#002855]">
+                        <Settings className="h-4 w-4" />
+                    </button>
+                 </div>
+
                 <div className="p-5 bg-white border-b border-slate-200 shadow-sm z-10">
                     <div className="flex justify-between items-center mb-1">
                         <h2 className="text-lg font-bold text-[#002855] flex items-center gap-2">
@@ -510,13 +509,13 @@ export default function App() {
                             Pontos de Entrega
                         </h2>
                         <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-1 rounded-full border border-slate-200">
-                            {selectedUBS.length} Selecionados
+                            {selectedUBS.length}
                         </span>
                     </div>
                     <div className="flex justify-between items-center mt-2">
-                        <p className="text-xs text-slate-500">Selecione os clientes para a rota de hoje.</p>
+                        <p className="text-xs text-slate-500">Selecione os clientes.</p>
                         <button onClick={selectAll} className="text-xs text-[#002855] font-semibold hover:text-[#FBBF24] transition-colors">
-                            {selectedUBS.length === ITAJAI_UBS_LIST.length ? 'Limpar Seleção' : 'Selecionar Todos'}
+                            {selectedUBS.length === ITAJAI_UBS_LIST.length ? 'Limpar' : 'Todos'}
                         </button>
                     </div>
                 </div>
@@ -567,12 +566,12 @@ export default function App() {
                     `}
                     >
                     <Navigation className="h-5 w-5" />
-                    OTIMIZAR ROTA DE ENTREGA
+                    OTIMIZAR ROTA
                     </button>
                 </div>
             </div>
 
-            {/* Admin Monitor Panel */}
+            {/* Admin Monitor Panel (UPDATED FOR MULTIPLE DRIVERS) */}
              <div className={`
                 absolute inset-0 w-full h-full flex flex-col bg-slate-50
                 transition-all duration-500 ease-in-out transform
@@ -581,45 +580,47 @@ export default function App() {
                 <div className="p-5 bg-gradient-to-r from-[#002855] to-[#001f40] text-white shadow-md">
                     <h2 className="text-lg font-bold flex items-center gap-2 mb-1">
                         <Truck className="h-5 w-5 text-[#FBBF24]" />
-                        Monitoramento em Tempo Real
+                        Frota em Tempo Real
                     </h2>
                     <p className="text-xs text-blue-200">
-                        Acompanhe a localização da frota.
+                        {activeDrivers.length} veículo(s) conectado(s).
                     </p>
-                    <div className="mt-4 bg-white/10 p-3 rounded border border-white/20">
-                         <div className="flex items-center gap-2 mb-2">
-                             <div className={`w-2 h-2 rounded-full ${adminTrackingLocation ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`}></div>
-                             <span className="text-xs font-bold text-white">
-                                 {adminTrackingLocation ? 'Veículo Conectado' : 'Aguardando Sinal...'}
-                             </span>
-                         </div>
-                         <p className="text-[10px] text-blue-200 flex gap-2 items-start">
-                             <Wifi className="h-4 w-4 text-green-400 flex-shrink-0" />
-                             <span>
-                                O sistema está recebendo dados de localização ao vivo do dispositivo móvel do entregador via satélite/internet.
-                             </span>
-                         </p>
-                    </div>
                 </div>
                 
-                <div className="p-4">
-                     <h3 className="text-sm font-bold text-[#002855] mb-2">Status da Frota</h3>
-                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
-                         <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
-                             <span className="text-xs text-slate-500">Motorista Ativo</span>
-                             <span className="text-xs font-bold text-slate-800">Entregador H2</span>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                     <h3 className="text-xs font-bold text-[#002855] uppercase tracking-wider">Entregadores Ativos</h3>
+                     
+                     {activeDrivers.length === 0 ? (
+                         <div className="text-center py-10 bg-white rounded-lg border border-dashed border-slate-300">
+                             <Wifi className="h-8 w-8 text-slate-300 mx-auto mb-2" />
+                             <p className="text-sm text-slate-500 font-medium">Nenhum motorista online.</p>
+                             <p className="text-xs text-slate-400 mt-1">Aguardando conexão...</p>
                          </div>
-                         <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
-                             <span className="text-xs text-slate-500">Última Atualização</span>
-                             <span className="text-xs font-bold text-slate-800">{getLastUpdateText()}</span>
-                         </div>
-                         <div className="flex justify-between items-center">
-                             <span className="text-xs text-slate-500">Status GPS</span>
-                             <span className={`text-xs font-bold ${adminTrackingLocation ? 'text-green-600' : 'text-red-500'}`}>
-                                 {adminTrackingLocation ? 'Online' : 'Offline'}
-                             </span>
-                         </div>
-                     </div>
+                     ) : (
+                         activeDrivers.map((driver) => (
+                            <div key={driver.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                                <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-8 h-8 rounded-full bg-[#002855] text-white flex items-center justify-center font-bold text-xs">
+                                            {driver.name.substring(0, 2).toUpperCase()}
+                                        </div>
+                                        <div>
+                                            <span className="text-sm font-bold text-slate-800 block leading-tight">{driver.name}</span>
+                                            <span className="text-[10px] text-slate-400">ID: {driver.id.substring(0, 8)}</span>
+                                        </div>
+                                    </div>
+                                    <span className="flex items-center gap-1 text-[10px] font-bold text-green-600 bg-green-50 px-2 py-1 rounded-full border border-green-100">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                                        ONLINE
+                                    </span>
+                                </div>
+                                <div className="flex justify-between items-center text-xs">
+                                    <span className="text-slate-500">Última atualização:</span>
+                                    <span className="font-bold text-slate-800">{getTimeSinceUpdate(driver.updatedAt)}</span>
+                                </div>
+                            </div>
+                         ))
+                     )}
                 </div>
             </div>
 
@@ -633,26 +634,18 @@ export default function App() {
                 <div className="p-5 bg-[#002855] text-white shadow-md">
                     <h2 className="text-lg font-bold flex items-center gap-2 mb-3">
                         <History className="h-5 w-5 text-[#FBBF24]" />
-                        Histórico de Entregas
+                        Histórico
                     </h2>
-                    
-                    {/* Fixed Calendar Input - 100% Clickable Area */}
                     <div className="relative group cursor-pointer">
                         <div className="flex items-center justify-between bg-[#003366] group-hover:bg-[#004080] p-3 rounded-lg border border-[#004080] transition-colors">
                             <div className="flex items-center gap-2">
                                 <Calendar className="h-5 w-5 text-[#FBBF24]" />
-                                <span className="text-sm text-blue-100">Filtrar por data:</span>
+                                <span className="text-sm text-blue-100">Data:</span>
                             </div>
                             <span className="text-base font-bold text-white tracking-wide">
                                 {new Date(historyDateFilter).toLocaleDateString('pt-BR')}
                             </span>
                         </div>
-                        
-                        {/* 
-                           Este input cobre todo o botão pai. 
-                           Ele é invisível (opacity-0), mas recebe o clique.
-                           Ao clicar, o navegador abre o calendário nativo.
-                        */}
                         <input 
                             type="date" 
                             value={historyDateFilter}
@@ -661,14 +654,13 @@ export default function App() {
                             style={{ display: 'block' }} 
                         />
                     </div>
-                    <p className="text-[10px] text-blue-300 mt-1 text-center">Toque na data acima para abrir o calendário</p>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
                     {filteredHistory.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full text-slate-400">
                             <CheckSquare className="h-12 w-12 mb-2 opacity-20" />
-                            <p className="text-sm">Nenhuma entrega registrada nesta data.</p>
+                            <p className="text-sm">Nenhuma entrega.</p>
                         </div>
                     ) : (
                         <div className="space-y-3">
@@ -694,12 +686,6 @@ export default function App() {
                         </div>
                     )}
                 </div>
-                <div className="p-4 border-t bg-white">
-                     <div className="flex justify-between text-xs text-slate-500 font-medium">
-                         <span>Total no dia:</span>
-                         <span className="text-[#002855] font-bold">{filteredHistory.length} entregas</span>
-                     </div>
-                </div>
             </div>
 
             {/* Result Panel */}
@@ -718,7 +704,7 @@ export default function App() {
                             <div>
                                 <h2 className="text-lg font-bold text-green-800">Rota Otimizada</h2>
                                 <p className="text-xs text-green-700 font-medium">
-                                    Distância Estimada: <span className="bg-green-200 px-1.5 py-0.5 rounded text-green-900">{optimizationResult.totalDistanceEst}</span>
+                                    Total: <span className="bg-green-200 px-1.5 py-0.5 rounded text-green-900">{optimizationResult.totalDistanceEst}</span>
                                 </p>
                             </div>
                         </div>
@@ -732,35 +718,27 @@ export default function App() {
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
-                        
-                        {/* BOTÃO NAVEGAR TUDO */}
                         <div className="mb-6 px-3">
                             <button
                                 onClick={handleNavigateAll}
                                 className="w-full bg-[#002855] hover:bg-[#003366] text-[#FBBF24] font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition-colors border-2 border-[#FBBF24]"
                             >
                                 <MapIcon className="h-5 w-5" />
-                                ABRIR ROTA COMPLETA NO MAPS
+                                ABRIR ROTA NO MAPS
                             </button>
-                            <p className="text-[10px] text-center text-slate-400 mt-2">
-                                Abre o Google Maps com todas as paradas em sequência.
-                            </p>
                         </div>
 
                         <div className="relative border-l-2 border-slate-300 ml-3 space-y-6 pb-6">
-                            {/* Start Point */}
                             <div className="relative pl-8">
                                 <div className="absolute -left-[9px] top-1 w-4 h-4 rounded-full bg-green-500 border-2 border-white shadow ring-4 ring-green-50"></div>
                                 <div className="flex flex-col">
-                                    <span className="text-[10px] font-extrabold text-green-600 uppercase tracking-widest mb-1">Início da Jornada</span>
+                                    <span className="text-[10px] font-extrabold text-green-600 uppercase tracking-widest mb-1">Início</span>
                                     <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
-                                        <p className="text-sm font-bold text-slate-800">H2 Distribuidora (Móvel)</p>
-                                        <p className="text-xs text-slate-500">Localização atual do veículo</p>
+                                        <p className="text-sm font-bold text-slate-800">Local Atual</p>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Stops */}
                             {optimizationResult.route.map((stop, idx) => {
                                 const isCompleted = stop.status === 'completed';
                                 return (
@@ -783,7 +761,7 @@ export default function App() {
                                             </div>
                                             {isCompleted && (
                                                 <span className="text-[10px] bg-green-200 text-green-800 px-1.5 py-0.5 rounded font-bold">
-                                                    Entregue: {stop.completedAt}
+                                                    Feito: {stop.completedAt}
                                                 </span>
                                             )}
                                         </div>
@@ -796,13 +774,13 @@ export default function App() {
                                                     rel="noreferrer"
                                                     className="flex-1 flex items-center justify-center gap-2 py-2 bg-slate-50 hover:bg-blue-50 text-[#002855] text-xs font-bold rounded border border-slate-200 hover:border-blue-200 transition-colors"
                                                 >
-                                                    <Navigation className="h-3.5 w-3.5" /> NAVEGAR
+                                                    <Navigation className="h-3.5 w-3.5" /> IR
                                                 </a>
                                                 <button
                                                     onClick={() => openConfirmModal(stop.id)}
                                                     className="flex-1 flex items-center justify-center gap-2 py-2 bg-[#FBBF24] hover:bg-[#F59E0B] text-[#002855] text-xs font-bold rounded shadow-sm transition-colors"
                                                 >
-                                                    <CheckSquare className="h-3.5 w-3.5" /> CONFIRMAR
+                                                    <CheckSquare className="h-3.5 w-3.5" /> OK
                                                 </button>
                                             </div>
                                         )}
@@ -929,7 +907,7 @@ export default function App() {
                         <textarea
                             value={noteText}
                             onChange={(e) => setNoteText(e.target.value)}
-                            placeholder="Ex: Recebido pelo porteiro, portão estava fechado..."
+                            placeholder="Ex: Recebido pelo porteiro..."
                             className="w-full p-3 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#002855] min-h-[80px]"
                         ></textarea>
 
@@ -958,7 +936,7 @@ export default function App() {
             currentLocation={currentLocation}
             selectedUBS={selectedUBSObjects}
             optimizedRoute={optimizationResult?.route || null}
-            adminTrackingLocation={isAdmin && viewState === 'admin-monitor' ? adminTrackingLocation : null}
+            activeDrivers={isAdmin && viewState === 'admin-monitor' ? activeDrivers : undefined}
           />
         </div>
 

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { Coordinates, UBS, OptimizedStop } from '../types';
+import { Coordinates, UBS, OptimizedStop, ActiveDriver } from '../types';
 
 // Fix for default Leaflet marker icons in React without bundler image support
 const iconUrl = 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png';
@@ -50,7 +50,7 @@ interface MapProps {
   currentLocation: Coordinates | null;
   selectedUBS: UBS[];
   optimizedRoute: OptimizedStop[] | null;
-  adminTrackingLocation?: Coordinates | null; // Location of the driver seen by admin
+  activeDrivers?: ActiveDriver[]; // List of multiple drivers for admin
 }
 
 // Helper to fit bounds
@@ -65,16 +65,22 @@ const RecenterMap = ({ coords }: { coords: Coordinates[] }) => {
   return null;
 };
 
-const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimizedRoute, adminTrackingLocation }) => {
-  const center: [number, number] = adminTrackingLocation 
-    ? [adminTrackingLocation.lat, adminTrackingLocation.lng]
-    : currentLocation 
-      ? [currentLocation.lat, currentLocation.lng] 
-      : [-26.9046, -48.6612];
+const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimizedRoute, activeDrivers }) => {
+  // Determine center priority: First driver -> Current Loc -> Default
+  let center: [number, number] = [-26.9046, -48.6612];
+  
+  if (activeDrivers && activeDrivers.length > 0) {
+      center = [activeDrivers[0].lat, activeDrivers[0].lng];
+  } else if (currentLocation) {
+      center = [currentLocation.lat, currentLocation.lng];
+  }
 
   const pointsToFit: Coordinates[] = [];
   if (currentLocation) pointsToFit.push(currentLocation);
-  if (adminTrackingLocation) pointsToFit.push(adminTrackingLocation);
+  
+  if (activeDrivers) {
+      activeDrivers.forEach(d => pointsToFit.push({ lat: d.lat, lng: d.lng }));
+  }
   
   if (optimizedRoute) {
     optimizedRoute.forEach(s => pointsToFit.push(s.coords));
@@ -89,25 +95,32 @@ const MapComponent: React.FC<MapProps> = ({ currentLocation, selectedUBS, optimi
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       
-      {/* Driver View Marker */}
-      {!adminTrackingLocation && currentLocation && (
+      {/* Driver View Marker (Self) */}
+      {!activeDrivers && currentLocation && (
         <Marker position={[currentLocation.lat, currentLocation.lng]} icon={startIcon}>
           <Popup><strong>Ponto de Partida</strong><br/>Sua localização atual</Popup>
         </Marker>
       )}
 
-      {/* Admin View: Simulated Driver Location */}
-      {adminTrackingLocation && (
-        <Marker position={[adminTrackingLocation.lat, adminTrackingLocation.lng]} icon={truckIcon} zIndexOffset={1000}>
+      {/* Admin View: Multiple Drivers */}
+      {activeDrivers && activeDrivers.map((driver) => (
+        <Marker 
+            key={driver.id}
+            position={[driver.lat, driver.lng]} 
+            icon={truckIcon} 
+            zIndexOffset={1000}
+        >
           <Popup>
              <div className="text-center">
-                <strong className="text-[#002855]">H2 Entregas</strong><br/>
-                <span className="text-xs text-green-600 font-bold">● Em movimento</span><br/>
-                <span className="text-[10px] text-slate-500">Atualizado agora</span>
+                <strong className="text-[#002855]">{driver.name}</strong><br/>
+                <span className="text-xs text-green-600 font-bold">● Online</span><br/>
+                <span className="text-[10px] text-slate-500">
+                    {new Date(driver.updatedAt).toLocaleTimeString()}
+                </span>
              </div>
           </Popup>
         </Marker>
-      )}
+      ))}
 
       {/* Render optimized route if available */}
       {optimizedRoute ? (
